@@ -76,7 +76,7 @@ UPDATE_POLL_INTERVAL=60              # fallback polling in seconds, 0 = webhook 
   - Content type: `application/json`, Secret: `GITHUB_WEBHOOK_SECRET`, events: *Just the push event*
 - **Polling (no public URL needed):** the updater checks the branch every `UPDATE_POLL_INTERVAL` seconds.
 
-On a new commit it runs `git reset --hard origin/<branch>` and `docker compose up -d --build app`. Clips and the database live in the `data` volume and survive updates. If files under `updater/` change, it rebuilds itself through a one-shot helper container. Status: `docker compose exec updater wget -qO- localhost:9000/status`.
+On a new commit it runs `git reset --hard origin/<branch>` and `docker compose up -d --build app` from the checkout (so a local `docker-compose.override.yml` is honoured). Clips and the database live in the `data` volume and survive updates. If files under `updater/` change, it rebuilds itself through a one-shot helper container. Status: `docker compose exec updater wget -qO- localhost:9000/status`.
 
 > The updater mounts `/var/run/docker.sock` so it can rebuild containers — run it only on a host you control.
 
