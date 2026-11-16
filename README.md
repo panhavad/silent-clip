@@ -2,7 +2,7 @@
 
 Auto-clip the most viral moments from Twitch live streams into vertical **YouTube Shorts / TikTok / Instagram Reels** — with captions, title, description, viral point and hashtags.
 
-**All watching, chat analysis, cutting and 9:16 rendering run in the user's browser** (Web Workers + ffmpeg.wasm). The server only stores data: accounts, streamer lists, finished clips and their metadata.
+**All watching, chat analysis, cutting and 9:16 rendering run in the user's browser** (Web Workers + ffmpeg.wasm). The server stores data (accounts, streamers, finished clips, schedules) and, for publishing, hands the finished MP4 to YouTube / TikTok / Instagram through each user's linked account — so scheduled posts go out even when nobody has the app open. No video processing happens on the server.
 
 ## Features
 
@@ -14,7 +14,10 @@ Auto-clip the most viral moments from Twitch live streams into vertical **YouTub
 - On a viral moment the browser cuts **20 s before + 10 s after** (configurable) from an in-memory HLS ring buffer, renders **9:16** (blurred-background or center-crop) and uploads it
 - **Every clip is captioned by default**: a hook headline, the top chat reaction bubble, and **spoken-word subtitles** transcribed in the browser with Whisper (transformers.js, WebGPU or WebAssembly) in the streamer's Twitch broadcast language
 - Auto-generated **title, description, viral point (score, reason, chat evidence) and hashtags**
-- Clip library with **New / Downloaded / Posted** tracking, editable metadata, editable subtitles + caption re-render, **Caption all clips** (adds subtitles to older clips), download, **YouTube Shorts upload** (Data API, from the browser) and assisted posting to **TikTok / Instagram** (share sheet or download + caption copy + mark as posted)
+- Clip library with **New / Downloaded / Posted / Scheduled** tracking, editable metadata, editable subtitles + caption re-render, **Caption all clips** (adds subtitles to older clips) and download
+- **Connected accounts** — link YouTube, TikTok and Instagram once (official OAuth); then **Post now** or **Schedule** any clip and the server uploads it for you
+- **Auto-publish** — choose posting times and days per platform (e.g. TikTok 11:00 / 16:00 / 20:00) plus a minimum viral score; the planner fills upcoming slots with your best unposted clips and publishes them automatically
+- **Schedule calendar** (week / month) — every scheduled, published and failed post, open slots, drag-and-drop rescheduling, post now / retry / unschedule
 - `docker compose` deployment with an **auto-updater** that redeploys on every `git push` to your private GitHub repo
 
 ## Architecture
@@ -27,8 +30,10 @@ Browser (per user)                                        Server (Node + SQLite)
 │  ├─ HLS buffer   → Twitch CDN segments (CORS) │         │ clips: mp4/jpg/source    │
 │  ├─ chat         → irc-ws.chat.twitch.tv      │         │ master-playlist relay*   │
 │  └─ analyzer     → viral moment               │         └──────────────────────────┘
-│ render.js (ffmpeg.wasm) → 9:16 mp4 + captions │──upload──► /api/clips
-└───────────────────────────────────────────────┘
+│ render.js (ffmpeg.wasm) → 9:16 mp4 + captions │──upload──► /api/clips │ publisher: OAuth tokens  │
+└───────────────────────────────────────────────┘         │  (AES-GCM), queue,       │
+                                                          │  auto-planner ──────────►│ YouTube / TikTok / IG APIs
+                                                          └──────────────────────────┘
 updater sidecar: GitHub push webhook / polling → git pull → docker compose up --build app
 ```
 
@@ -57,7 +62,18 @@ Put it behind HTTPS (Caddy, Nginx, Traefik, Cloudflare Tunnel…) for production
    GOOGLE_CLIENT_SECRET=xxxx
    GOOGLE_CALLBACK_URL=https://clips.example.com/auth/google/callback
    ```
-5. For one-click **YouTube Shorts** upload, enable *YouTube Data API v3* in the same project (users grant the `youtube.upload` scope in a popup; the upload goes straight from their browser to YouTube).
+
+### Connected accounts (auto upload to YouTube / TikTok / Instagram)
+
+Users link their channels under **Settings → Connected accounts**. Each platform needs a developer app whose keys go in `.env`; the redirect URI is always `https://<your host>/connect/<platform>/callback`. Tokens are encrypted at rest with `APP_SECRET` (or a generated key in the data volume) and refreshed automatically.
+
+| Platform | Where | `.env` | Notes |
+|---|---|---|---|
+| YouTube Shorts | Same Google OAuth client as sign-in + enable **YouTube Data API v3**; add redirect `…/connect/youtube/callback` | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `YOUTUBE_PRIVACY` | Uploads from unverified Google projects are private until the project passes Google's API audit. Default quota ≈ 6 uploads/day per project. |
+| TikTok | developers.tiktok.com → app with **Login Kit** + **Content Posting API** (scopes `video.publish`, `video.upload`, `user.info.basic`, `user.info.profile`) | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_POST_MODE` | Until TikTok audits the app, direct posts are visible only to the creator (SELF_ONLY). `TIKTOK_POST_MODE=inbox` sends the video to the creator's TikTok inbox as a draft instead. |
+| Instagram Reels | developers.facebook.com → app with **Instagram API with Instagram Login** (`instagram_business_basic`, `instagram_business_content_publish`) | `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET` | Needs a Professional (Business/Creator) account. With an `https` `PUBLIC_URL`, Instagram pulls the video from a signed, expiring `/media/…` link; otherwise it is pushed with the resumable upload API. |
+
+Set `PUBLISH_DRY_RUN=true` to try linking, posting, scheduling and auto-publish without any platform apps (everything is simulated and marked *Demo mode*).
 
 ### Auto-update on `git push` (private GitHub repo)
 
@@ -88,7 +104,8 @@ On a new commit it runs `git reset --hard origin/<branch>` and `docker compose u
    - Foreground opens a window per streamer (or one grid window). If the browser blocks pop-ups, allow them for the site or use **Watch in window** per streamer.
    - Each streamer is watched by exactly one window/tab at a time (Web Locks), so modes can be mixed safely.
 3. When chat explodes, the card shows *Capturing → Rendering 9:16 → Saved*. **Clip now** captures manually.
-4. **Clips** → review, tweak title/description/hashtags/caption (re-render), then **Download**, **YouTube Shorts**, **TikTok** or **Instagram**. Downloaded/posted clips leave the *New* list.
+4. **Clips** → review, tweak title/description/hashtags/caption (re-render), then click **YouTube Shorts**, **TikTok** or **Instagram** → **Post now** or **Schedule** (or *post manually* if the account isn't linked). Downloaded/posted clips leave the *New* list.
+5. **Schedule** → turn on **Auto-publish**, set posting times/days per platform and a minimum viral score. The calendar shows what goes out when; drag a post to another day, or click it to post now, reschedule, retry or unschedule.
 
 ### Settings
 
@@ -100,7 +117,8 @@ The speech model (~100 MB, `onnx-community/whisper-base_timestamped`) is downloa
 
 - Keep at least one app tab/window open while watching — processing happens in the browser by design. Chrome/Edge (desktop) recommended. A 30 s 720p clip takes roughly 1.5–2 minutes (transcription + render) on a typical laptop.
 - During Twitch **ad breaks** anonymous viewers receive ads instead of the stream; those seconds can't be clipped. Setting `TWITCH_AUTH_TOKEN` to a Turbo/subscriber account's token avoids this.
-- TikTok and Instagram don't offer browser-side upload APIs to unaudited apps, so posting is assisted (share sheet / download + caption copy + mark as posted). YouTube uploads directly.
+- Publishing uses each platform's official API, so the platform rules above apply (app review / audit for public posting, Instagram Professional accounts, YouTube quota). Failed uploads are retried 3 times and shown in red on the calendar.
+- Auto-publish plans 7 days ahead; slots beyond that fill in as new clips arrive. A clip is never auto-posted twice to the same platform, and unscheduling a planned post keeps that clip off that platform's plan.
 - Respect streamers' rights and each platform's terms when re-posting content.
 
 ## Development

@@ -1,5 +1,6 @@
 import { api, esc, toast, timeAgo } from './api.js';
-import { uploadToYouTube, shareClip, postText, UPLOAD_PAGES } from './publish.js';
+import { shareClip, postText, UPLOAD_PAGES } from './publish.js';
+import { getAccounts, accountFor, PLATFORM_META } from './accounts.js';
 import { renderClip } from './engine/render.js';
 import { autoSubtitles, phrasesToText, textToPhrases } from './engine/transcribe.js';
 import { getChannel } from './engine/twitch.js';
@@ -52,6 +53,7 @@ export class ClipLibrary {
             ${c.viral.subtitles?.length ? '<span class="badge" title="Has spoken subtitles">CC</span>' : ''}
             ${c.downloadedAt ? '<span class="plat dl" title="Downloaded">⬇</span>' : ''}
             ${Object.keys(c.posted).map((p) => `<span class="plat ${p}" title="Posted to ${PLAT_LABEL[p]}">${PLAT_ICON[p]}</span>`).join('')}
+            ${(c.scheduled || []).map((s) => `<span class="badge" title="Scheduled on ${PLAT_LABEL[s.platform]} for ${new Date(s.at).toLocaleString()}">🕒 ${PLAT_ICON[s.platform]}</span>`).join('')}
           </div>
           <div class="score">🔥 ${c.viral.score ?? '–'}</div>
         </div>
@@ -141,7 +143,6 @@ export class ClipLibrary {
     const back = document.createElement('div');
     back.className = 'modal-back';
     const v = clip.viral || {};
-    const ytEnabled = this.config.youtubeUpload;
     back.innerHTML = `
       <div class="modal">
         <div class="video-col"><video controls playsinline src="${clip.videoUrl}" poster="${clip.thumbUrl || ''}"></video></div>
@@ -255,37 +256,71 @@ export class ClipLibrary {
       };
     };
 
-    $('.p-tiktok').onclick = () => assisted('tiktok');
-    $('.p-instagram').onclick = () => assisted('instagram');
-    $('.p-youtube').onclick = () => {
-      if (!ytEnabled) return assisted('youtube');
+    $('.p-tiktok').onclick = () => publishPanel('tiktok');
+    $('.p-instagram').onclick = () => publishPanel('instagram');
+    $('.p-youtube').onclick = () => publishPanel('youtube');
+
+    // Linked account → server uploads for you (now or at a scheduled time); otherwise connect or post manually.
+    const STATUS = { scheduled: '🕒 Scheduled', publishing: '⬆ Publishing…', published: '✅ Published', failed: '⚠ Failed', canceled: 'Canceled' };
+    let pollTimer = null;
+    const publishPanel = async (platform) => {
+      clearTimeout(pollTimer);
+      const accounts = await getAccounts();
+      const acc = accountFor(accounts, platform);
+      const label = PLATFORM_META[platform].label;
       panel.classList.remove('hidden');
-      panel.innerHTML = `
-        <h3>Upload to YouTube Shorts</h3>
-        <div class="row" style="margin-top:8px"><select class="y-privacy" style="width:auto">
-          <option value="public">Public</option><option value="unlisted">Unlisted</option><option value="private">Private</option></select>
-          <button class="btn yt y-go">▶ Upload now</button><span class="y-status muted small"></span></div>
-        <div class="muted small" style="margin-top:6px">Uploads straight from your browser with your Google account. <a href="#" class="y-manual">Post manually instead</a></div>`;
-      panel.querySelector('.y-manual').onclick = (e) => { e.preventDefault(); assisted('youtube'); };
-      panel.querySelector('.y-go').onclick = async (e) => {
-        const btn = e.currentTarget;
-        btn.disabled = true;
-        const st = panel.querySelector('.y-status');
+      if (!acc?.connected) {
+        panel.innerHTML = `<h3>${label}</h3>
+          <p class="small muted" style="margin:6px 0 10px">Link your ${label} account once and SlientClip will upload clips for you — instantly, on a schedule, or automatically.</p>
+          <div class="row wrap">${acc?.configured ? `<a class="btn primary" href="/connect/${platform}">🔗 Connect ${label}</a>` : `<span class="small" style="color:var(--warn)">${label} isn't configured on this server yet (app keys missing in .env).</span>`}
+          <a href="#" class="small manual">or post manually</a></div>`;
+        panel.querySelector('.manual').onclick = (e) => { e.preventDefault(); assisted(platform); };
+        return;
+      }
+      const inHour = new Date(Date.now() + 3600000);
+      inHour.setMinutes(0, 0, 0);
+      const pad = (n) => String(n).padStart(2, '0');
+      const local = `${inHour.getFullYear()}-${pad(inHour.getMonth() + 1)}-${pad(inHour.getDate())}T${pad(inHour.getHours())}:00`;
+      panel.innerHTML = `<div class="row"><h3 style="margin:0">${label}</h3><span class="small muted">as @${esc(acc.username || acc.displayName)}</span>${accounts.demo ? '<span class="badge elsewhere">demo</span>' : ''}</div>
+        <div class="row wrap" style="margin:10px 0">
+          <button class="btn primary now">⬆ Post now</button>
+          <span class="muted small">or</span>
+          <input type="datetime-local" class="when" value="${local}" style="width:auto"><button class="btn sched">🕒 Schedule</button>
+        </div>
+        <div class="post-list"></div>
+        <div class="small muted" style="margin-top:6px">Uses the title + hashtags above. <a href="#" class="manual">Post manually instead</a></div>`;
+      panel.querySelector('.manual').onclick = (e) => { e.preventDefault(); assisted(platform); };
+      const list = panel.querySelector('.post-list');
+      const refresh = async () => {
+        const posts = (await api(`/api/posts?clipId=${clip.id}`)).filter((p) => p.platform === platform && p.status !== 'canceled');
+        list.innerHTML = posts.map((p) => `<div class="item"><b>${STATUS[p.status]}</b>
+          <span class="muted">${new Date(p.publishedAt || p.scheduledAt).toLocaleString()}${p.source === 'auto' ? ' · auto' : ''}</span>
+          ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">open ↗</a>` : ''}
+          ${p.error ? `<span style="color:var(--bad)">${esc(p.error)}</span>` : ''}<span class="spacer"></span>
+          ${p.status === 'scheduled' ? `<button class="btn sm ghost unsched" data-id="${p.id}">✕</button>` : ''}
+          ${p.status === 'failed' ? `<button class="btn sm retry" data-id="${p.id}">↻ Retry</button>` : ''}</div>`).join('');
+        list.querySelectorAll('.unsched').forEach((b) => { b.onclick = async () => { await api(`/api/posts/${b.dataset.id}`, { method: 'DELETE' }); refresh(); }; });
+        list.querySelectorAll('.retry').forEach((b) => { b.onclick = async () => { await api(`/api/posts/${b.dataset.id}/retry`, { method: 'POST' }); refresh(); }; });
+        if (posts.some((p) => p.status === 'published')) { Object.assign(clip, await api(`/api/clips/${clip.id}`)); renderBadges(); }
+        if (posts.some((p) => p.status === 'publishing' || (p.status === 'scheduled' && p.scheduledAt <= Date.now() + 60000)) && back.isConnected) {
+          pollTimer = setTimeout(refresh, 2000);
+        }
+      };
+      const create = async (scheduledAt) => {
         try {
           await save();
-          st.textContent = 'Authorizing…';
-          const res = await uploadToYouTube(clip, {
-            clientId: this.config.googleClientId, privacy: panel.querySelector('.y-privacy').value,
-            onProgress: (p) => { st.textContent = `Uploading ${Math.round(p * 100)}%`; },
-          });
-          await this.mark(clip, { action: 'posted', platform: 'youtube', url: res.url });
-          renderBadges();
-          st.innerHTML = `Done — <a href="${res.url}" target="_blank" rel="noopener">view on YouTube ↗</a>`;
-        } catch (err) {
-          st.textContent = '';
-          toast(err.message, 'error');
-        } finally { btn.disabled = false; }
+          await api('/api/posts', { method: 'POST', body: { clipId: clip.id, platform, scheduledAt } });
+          toast(scheduledAt ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}` : `Uploading to ${label}…`, 'ok');
+          refresh();
+        } catch (err) { toast(err.message, 'error'); }
       };
+      panel.querySelector('.now').onclick = () => create();
+      panel.querySelector('.sched').onclick = () => {
+        const at = new Date(panel.querySelector('.when').value).getTime();
+        if (!(at > Date.now())) return toast('Pick a time in the future', 'error');
+        create(at);
+      };
+      refresh();
     };
     $('.mark-new').onclick = async () => { await this.mark(clip, { action: 'new' }); renderBadges(); toast('Marked as new', 'ok'); };
     $('.delete').onclick = async () => {

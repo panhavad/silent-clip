@@ -14,6 +14,7 @@
       <button class="tab active" data-tab="live">Live monitor</button>
       <button class="tab" data-tab="streamers">Streamers</button>
       <button class="tab" data-tab="clips">Clips <span class="count new-count hidden"></span></button>
+      <button class="tab" data-tab="schedule">Schedule</button>
       <button class="tab" data-tab="settings">Settings</button>
     </nav>
     <span class="spacer"></span>
@@ -64,7 +65,10 @@
 
     <section data-view="clips" class="hidden"><div class="panel clips-root"></div></section>
 
+    <section data-view="schedule" class="hidden"><div class="schedule-root"></div></section>
+
     <section data-view="settings" class="hidden">
+      <div class="panel accounts-root" style="margin-bottom:16px"></div>
       <form class="panel settings-form">
         <div class="section-head"><h2 style="margin:0">Clipping settings</h2><span class="spacer"></span><button class="btn primary">Save settings</button></div>
         <div class="settings-grid">

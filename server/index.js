@@ -10,6 +10,7 @@ import {
   googleConfigured, googleStart, googleCallback,
 } from './auth.js';
 import { masterPlaylist } from './twitch.js';
+import { router as publisher, startScheduler, onClipCreated } from './publisher.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { version } = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
@@ -53,8 +54,6 @@ app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], setHea
 app.get('/api/config', (_req, res) => {
   res.json({
     googleLogin: googleConfigured(),
-    googleClientId: process.env.GOOGLE_CLIENT_ID || '',
-    youtubeUpload: Boolean(process.env.GOOGLE_CLIENT_ID) && process.env.YOUTUBE_UPLOAD !== 'false',
     allowRegistration: process.env.ALLOW_REGISTRATION !== 'false',
   });
 });
@@ -90,6 +89,8 @@ app.post('/api/auth/login', (req, res) => {
 app.post('/api/auth/logout', (req, res) => { destroySession(req, res); res.json({ ok: true }); });
 
 app.use('/api', requireUser);
+// Linked social accounts, publishing queue and auto-publish schedule (+ /connect/* OAuth and signed /media/* links).
+app.use(publisher);
 
 app.get('/api/me', (req, res) => {
   const u = req.user;
@@ -211,6 +212,7 @@ app.post('/api/clips', clipFiles, (req, res) => {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(id, req.user.id, meta.streamer, meta.title, meta.description, JSON.stringify(meta.hashtags), meta.caption,
         JSON.stringify(meta.viral), meta.duration, meta.width, meta.height, size, video, thumb, source, Date.now());
+    onClipCreated(req.user.id);
     res.json(clipRow(db.prepare('SELECT * FROM clips WHERE id = ?').get(id)));
   } finally { cleanupTmp(req); }
 });
@@ -219,8 +221,13 @@ const getClip = (req) => db.prepare('SELECT * FROM clips WHERE id = ? AND user_i
 
 app.get('/api/clips', (req, res) => {
   const rows = db.prepare('SELECT * FROM clips WHERE user_id = ? ORDER BY created_at DESC').all(req.user.id).map(clipRow);
+  const scheduled = {};
+  for (const p of db.prepare("SELECT clip_id, platform, scheduled_at FROM posts WHERE user_id = ? AND status IN ('scheduled', 'publishing')").all(req.user.id)) {
+    (scheduled[p.clip_id] ||= []).push({ platform: p.platform, at: p.scheduled_at });
+  }
   const counts = { all: rows.length, new: 0, downloaded: 0, posted: 0 };
   for (const c of rows) {
+    c.scheduled = scheduled[c.id] || [];
     if (c.isNew) counts.new++;
     if (c.downloadedAt) counts.downloaded++;
     if (Object.keys(c.posted).length) counts.posted++;
@@ -325,6 +332,7 @@ app.use((err, _req, res, _next) => {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   app.listen(PORT, () => console.log(`slientclip listening on :${PORT}`));
+  startScheduler();
 }
 
 export default app;

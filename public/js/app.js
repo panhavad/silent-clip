@@ -3,6 +3,8 @@ import { WatcherManager } from './engine/manager.js';
 import { getChannels } from './engine/twitch.js';
 import { mountMonitors } from './monitor.js';
 import { ClipLibrary } from './clips.js';
+import { ScheduleView } from './schedule.js';
+import { renderAccounts } from './accounts.js';
 import { preloadRenderer } from './engine/render.js';
 import { thresholds } from './engine/analyzer.js';
 
@@ -27,7 +29,9 @@ function showTab(name) {
   $$('main > section').forEach((s) => s.classList.toggle('hidden', s.dataset.view !== name));
   if (name === 'clips') library.load();
   if (name === 'streamers') renderStreamers();
-  history.replaceState(null, '', `#${name}`);
+  if (name === 'schedule') schedule.load().catch((e) => toast(e.message, 'error'));
+  if (name === 'settings') renderAccounts($('.accounts-root')).catch((e) => toast(e.message, 'error'));
+  history.replaceState(null, '', `${location.pathname}#${name}`);
 }
 $$('.tab').forEach((t) => { t.onclick = () => showTab(t.dataset.tab); });
 
@@ -37,6 +41,16 @@ const library = new ClipLibrary($('.clips-root'), {
   onCounts: (c) => { const el = $('.new-count'); el.textContent = c.new; el.classList.toggle('hidden', !c.new); },
 });
 library.load();
+const schedule = new ScheduleView($('.schedule-root'), {
+  onOpenClip: async (id) => library.open(await api(`/api/clips/${id}`)),
+});
+
+// Result of an OAuth "Connect account" round trip.
+{
+  const q = new URLSearchParams(location.search);
+  if (q.get('connected')) toast(`${q.get('connected')} account connected`, 'ok');
+  if (q.get('connectError')) toast(`Could not connect: ${q.get('connectError')}`, 'error');
+}
 
 // ---------- background manager ----------
 const manager = new WatcherManager({ settings, userId: me.id, label: 'dashboard' });
@@ -224,4 +238,4 @@ if (resumeMode === 'background' || (!resumeMode && settings.autoStart && setting
   refreshAutomation();
 }
 const hash = location.hash.slice(1);
-if (['live', 'streamers', 'clips', 'settings'].includes(hash)) showTab(hash);
+if (['live', 'streamers', 'clips', 'schedule', 'settings'].includes(hash)) showTab(hash);

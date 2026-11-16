@@ -56,7 +56,39 @@ db.exec(`
     posted TEXT NOT NULL DEFAULT '{}'
   );
   CREATE INDEX IF NOT EXISTS clips_user_created ON clips(user_id, created_at DESC);
-`);
+  CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    external_id TEXT,
+    username TEXT,
+    display_name TEXT,
+    avatar TEXT,
+    access_token TEXT,
+    refresh_token TEXT,
+    expires_at INTEGER,
+    meta TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(user_id, platform)
+  );
+  CREATE TABLE IF NOT EXISTS posts (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    scheduled_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    source TEXT NOT NULL DEFAULT 'manual',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    external_id TEXT,
+    url TEXT,
+    published_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS posts_due ON posts(status, scheduled_at);
+  CREATE INDEX IF NOT EXISTS posts_user_time ON posts(user_id, scheduled_at);`);
 
 export const DEFAULT_SETTINGS = {
   mode: 'background',          // background | foreground
