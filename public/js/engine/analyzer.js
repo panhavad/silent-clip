@@ -165,8 +165,9 @@ export class HypeAnalyzer {
     const category = Object.entries(cats).sort((a, b) => b[1] - a[1])[0]?.[0] || 'hype';
     const topWords = top(tokens, 6).filter(([, v]) => v > 1);
     const topMessages = top(texts, 5).filter(([, v]) => v > 1).map(([t, n]) => ({ text: t, count: n }));
+    // Absolute spike strength, independent of the user's sensitivity setting.
     const score = c.manual ? 50 : Math.round(Math.min(99, Math.max(1,
-      50 + 10 * (c.z - this.th.z) + 12 * Math.log2(Math.max(1, c.ratio / this.th.ratio)))));
+      20 + 8 * c.z + 15 * Math.log2(Math.max(1, c.ratio)))));
     const reasonBits = [];
     if (!c.manual) reasonBits.push(`Chat spiked ${c.ratio.toFixed(1)}× above normal (${peakRate} msgs/sec peak, ${users.size} chatters)`);
     else reasonBits.push('Manually clipped');
