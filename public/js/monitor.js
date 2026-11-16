@@ -16,8 +16,8 @@ function drawSpark(canvas, rates = [], heat = 0) {
   if (!rates.length) return;
   const max = Math.max(4, ...rates);
   const grad = ctx.createLinearGradient(0, 0, w, 0);
-  grad.addColorStop(0, '#4f8cff');
-  grad.addColorStop(1, heat >= 1 ? '#ff4d8d' : '#9146ff');
+  grad.addColorStop(0, '#22d3ee');
+  grad.addColorStop(1, heat >= 1 ? '#10c98f' : '#2f7bff');
   ctx.beginPath();
   rates.forEach((r, i) => {
     const x = (i / (rates.length - 1)) * w, y = h - (r / max) * (h - 4) - 2;
@@ -27,7 +27,7 @@ function drawSpark(canvas, rates = [], heat = 0) {
   ctx.lineWidth = 2;
   ctx.stroke();
   ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
-  ctx.fillStyle = 'rgba(145,70,255,0.15)';
+  ctx.fillStyle = 'rgba(47,123,255,0.15)';
   ctx.fill();
 }
 
