@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db } from './db.js';
+import { db, newAccountState } from './db.js';
 
 const SESSION_COOKIE = 'sc_session';
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
@@ -50,14 +50,33 @@ export function loadUser(req, _res, next) {
   if (id) {
     const row = db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
                             WHERE s.id = ? AND s.expires_at > ?`).get(id, Date.now());
-    if (row) req.user = row;
+    if (row && row.status === 'active') req.user = row;
   }
   next();
 }
 
+export const STATUS_MESSAGE = {
+  pending: 'Your account is waiting for administrator approval.',
+  disabled: 'Your account has been disabled. Contact the administrator.',
+};
+
 export function requireUser(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Not signed in' });
   next();
+}
+
+export function requireAdmin(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Not signed in' });
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Administrator access required' });
+  next();
+}
+
+/** Start a session only for active accounts; returns an error message otherwise. */
+export function signIn(res, user) {
+  if (user.status !== 'active') return STATUS_MESSAGE[user.status] || 'Account is not active';
+  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(Date.now(), user.id);
+  createSession(res, user.id);
+  return null;
 }
 
 export const googleConfigured = () => Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
@@ -111,12 +130,15 @@ export async function googleCallback(req, res) {
       if (user) db.prepare('UPDATE users SET google_id = ?, avatar = COALESCE(avatar, ?) WHERE id = ?').run(info.sub, info.picture || null, user.id);
     }
     if (!user) {
-      const r = db.prepare('INSERT INTO users (email, name, google_id, avatar, created_at) VALUES (?, ?, ?, ?, ?)')
-        .run(info.email ? info.email.toLowerCase() : null, info.name || info.email || 'Google user', info.sub, info.picture || null, Date.now());
-      user = { id: Number(r.lastInsertRowid) };
+      const email = info.email ? info.email.toLowerCase() : null;
+      const { role, status } = newAccountState(email);
+      const r = db.prepare('INSERT INTO users (email, name, google_id, avatar, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(email, info.name || info.email || 'Google user', info.sub, info.picture || null, role, status, Date.now());
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(r.lastInsertRowid));
     }
     setCookie(res, 'sc_oauth_state', '', 0);
-    createSession(res, user.id);
+    const err = signIn(res, user);
+    if (err) return res.redirect(`/login.html?notice=${encodeURIComponent(err)}`);
     res.redirect('/');
   } catch (e) {
     res.redirect(`/login.html?error=${encodeURIComponent(e.message)}`);

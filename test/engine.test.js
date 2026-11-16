@@ -94,3 +94,11 @@ test('toPhrases groups words into short timed phrases and drops silence hallucin
   assert.deepEqual([phrases[3].start, phrases[3].end], [15.5, 19], 'overlong word timing is capped to 3.5s');
   assert.deepEqual(textToPhrases(phrasesToText(phrases)).map((p) => p.text), phrases.map((p) => p.text));
 });
+
+test('server captions strip emoji and wrap into short centred lines', async () => {
+  const { plain, wrap } = await import('../server/watch/render.js');
+  assert.equal(plain('CHAT WENT CRAZY 🔥🔥  now'), 'CHAT WENT CRAZY now');
+  assert.equal(plain('I CAN\'T 💀'), 'I CAN\'T');
+  assert.deepEqual(wrap('NOBODY EXPECTED THIS TO HAPPEN LIVE', 17, 3), ['NOBODY EXPECTED', 'THIS TO HAPPEN', 'LIVE']);
+  assert.deepEqual(wrap('ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE', 10, 2), ['ONE TWO', 'THREE FOUR']);
+});

@@ -1,16 +1,19 @@
 import express from 'express';
 import multer from 'multer';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, DATA_DIR, CLIPS_DIR, DEFAULT_SETTINGS, userSettings } from './db.js';
+import { db, DATA_DIR, CLIPS_DIR, userSettings, applySettings, newAccountState } from './db.js';
 import {
-  loadUser, requireUser, createSession, destroySession, hashPassword, verifyPassword,
+  loadUser, requireUser, destroySession, hashPassword, verifyPassword, signIn,
   googleConfigured, googleStart, googleCallback,
 } from './auth.js';
 import { masterPlaylist } from './twitch.js';
-import { router as publisher, startScheduler, onClipCreated } from './publisher.js';
+import { router as publisher, startScheduler } from './publisher.js';
+import { router as admin } from './admin.js';
+import { router as backup } from './backup.js';
+import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
+import { sanitizeMeta, insertClip } from './store.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { version } = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
@@ -70,9 +73,11 @@ app.post('/api/auth/register', (req, res) => {
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
   if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) return res.status(409).json({ error: 'Email already registered' });
-  const r = db.prepare('INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, ?)')
-    .run(email, name, hashPassword(password), Date.now());
-  createSession(res, Number(r.lastInsertRowid));
+  const { role, status } = newAccountState(email);
+  const r = db.prepare('INSERT INTO users (email, name, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(email, name, hashPassword(password), role, status, Date.now());
+  const err = signIn(res, db.prepare('SELECT * FROM users WHERE id = ?').get(Number(r.lastInsertRowid)));
+  if (err) return res.status(202).json({ pending: true, message: 'Account created. ' + err });
   res.json({ ok: true });
 });
 
@@ -82,7 +87,8 @@ app.post('/api/auth/login', (req, res) => {
   if (!user || !verifyPassword(String(req.body.password || ''), user.password_hash)) {
     return res.status(401).json({ error: 'Wrong email or password' });
   }
-  createSession(res, user.id);
+  const err = signIn(res, user);
+  if (err) return res.status(403).json({ error: err });
   res.json({ ok: true });
 });
 
@@ -91,25 +97,17 @@ app.post('/api/auth/logout', (req, res) => { destroySession(req, res); res.json(
 app.use('/api', requireUser);
 // Linked social accounts, publishing queue and auto-publish schedule (+ /connect/* OAuth and signed /media/* links).
 app.use(publisher);
+app.use('/api/admin', admin);
+app.use(backup);
+app.use(serverWatchRouter);
 
 app.get('/api/me', (req, res) => {
   const u = req.user;
-  res.json({ id: u.id, email: u.email, name: u.name, avatar: u.avatar, google: Boolean(u.google_id), settings: userSettings(u) });
+  res.json({ id: u.id, email: u.email, name: u.name, avatar: u.avatar, google: Boolean(u.google_id), role: u.role, settings: userSettings(u) });
 });
 
 app.put('/api/settings', (req, res) => {
-  const next = { ...userSettings(req.user) };
-  for (const [k, def] of Object.entries(DEFAULT_SETTINGS)) {
-    if (!(k in req.body)) continue;
-    const v = req.body[k];
-    if (typeof def === 'number') { const n = Number(v); if (Number.isFinite(n)) next[k] = n; }
-    else if (typeof def === 'boolean') next[k] = Boolean(v);
-    else next[k] = String(v);
-  }
-  next.sensitivity = Math.min(10, Math.max(1, next.sensitivity));
-  next.preRollSec = Math.min(60, Math.max(5, next.preRollSec));
-  next.postRollSec = Math.min(30, Math.max(3, next.postRollSec));
-  db.prepare('UPDATE users SET settings = ? WHERE id = ?').run(JSON.stringify(next), req.user.id);
+  const next = applySettings(req.user, req.body);
   res.json(next);
 });
 
@@ -134,6 +132,7 @@ app.post('/api/streamers', (req, res) => {
   db.prepare(`INSERT INTO streamers (user_id, login, display_name, avatar, created_at) VALUES (?, ?, ?, ?, ?)
               ON CONFLICT(user_id, login) DO UPDATE SET display_name = COALESCE(excluded.display_name, display_name), avatar = COALESCE(excluded.avatar, avatar)`)
     .run(req.user.id, login, req.body.displayName || null, req.body.avatar || null, Date.now());
+  syncUser(req.user.id);
   res.json(streamerRow(db.prepare('SELECT * FROM streamers WHERE user_id = ? AND login = ?').get(req.user.id, login)));
 });
 
@@ -142,11 +141,13 @@ app.patch('/api/streamers/:id', (req, res) => {
   if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare('UPDATE streamers SET enabled = ?, display_name = COALESCE(?, display_name), avatar = COALESCE(?, avatar) WHERE id = ?')
     .run(req.body.enabled === undefined ? row.enabled : (req.body.enabled ? 1 : 0), req.body.displayName || null, req.body.avatar || null, row.id);
+  syncUser(req.user.id);
   res.json(streamerRow(db.prepare('SELECT * FROM streamers WHERE id = ?').get(row.id)));
 });
 
 app.delete('/api/streamers/:id', (req, res) => {
   db.prepare('DELETE FROM streamers WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+  syncUser(req.user.id);
   res.json({ ok: true });
 });
 
@@ -162,7 +163,7 @@ const userDir = (userId) => { const d = path.join(CLIPS_DIR, String(userId)); fs
 const json = (s, fb) => { try { return JSON.parse(s); } catch { return fb; } };
 const cleanupTmp = (req) => Object.values(req.files || {}).flat().forEach((f) => fs.rm(f.path, { force: true }, () => {}));
 
-function clipRow(r) {
+export function clipRow(r) {
   const posted = json(r.posted, {});
   return {
     id: r.id, streamer: r.streamer_login, title: r.title, description: r.description,
@@ -171,22 +172,6 @@ function clipRow(r) {
     hasSource: Boolean(r.source_file), createdAt: r.created_at, downloadedAt: r.downloaded_at, posted,
     isNew: !r.downloaded_at && Object.keys(posted).length === 0,
     videoUrl: `/api/clips/${r.id}/video`, thumbUrl: r.thumb_file ? `/api/clips/${r.id}/thumb` : null,
-  };
-}
-
-function sanitizeMeta(body) {
-  const m = json(body.meta, {}) || {};
-  const tags = (Array.isArray(m.hashtags) ? m.hashtags : String(m.hashtags || '').split(/[\s,]+/))
-    .map((t) => String(t).trim().replace(/^#*/, '#')).filter((t) => t.length > 1).slice(0, 30);
-  return {
-    title: String(m.title || '').slice(0, 200),
-    description: String(m.description || '').slice(0, 5000),
-    hashtags: tags,
-    caption: String(m.caption || '').slice(0, 500),
-    viral: m.viral && typeof m.viral === 'object' ? m.viral : {},
-    streamer: String(m.streamer || '').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 25),
-    duration: Number(m.duration) || null, width: Number(m.width) || null, height: Number(m.height) || null,
-    sourceExt: m.sourceExt === 'mp4' ? 'mp4' : 'ts',
   };
 }
 
@@ -200,20 +185,12 @@ function storeFile(req, field, dest) {
 app.post('/api/clips', clipFiles, (req, res) => {
   try {
     if (!req.files?.video?.[0]) return res.status(400).json({ error: 'Missing video' });
-    const meta = sanitizeMeta(req.body);
+    const meta = sanitizeMeta(json(req.body.meta, {}) || {});
     if (!meta.streamer) return res.status(400).json({ error: 'Missing streamer' });
-    const id = crypto.randomUUID();
-    const dir = userDir(req.user.id);
-    const size = req.files.video[0].size;
-    const video = storeFile(req, 'video', path.join(dir, `${id}.mp4`));
-    const thumb = storeFile(req, 'thumb', path.join(dir, `${id}.jpg`));
-    const source = storeFile(req, 'source', path.join(dir, `${id}.src.${meta.sourceExt}`));
-    db.prepare(`INSERT INTO clips (id, user_id, streamer_login, title, description, hashtags, caption, viral, duration, width, height, size, video_file, thumb_file, source_file, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, req.user.id, meta.streamer, meta.title, meta.description, JSON.stringify(meta.hashtags), meta.caption,
-        JSON.stringify(meta.viral), meta.duration, meta.width, meta.height, size, video, thumb, source, Date.now());
-    onClipCreated(req.user.id);
-    res.json(clipRow(db.prepare('SELECT * FROM clips WHERE id = ?').get(id)));
+    const row = insertClip(req.user.id, meta, {
+      video: req.files.video[0].path, thumb: req.files.thumb?.[0]?.path, source: req.files.source?.[0]?.path,
+    });
+    res.json(clipRow(row));
   } finally { cleanupTmp(req); }
 });
 
@@ -333,6 +310,7 @@ app.use((err, _req, res, _next) => {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   app.listen(PORT, () => console.log(`slientclip listening on :${PORT}`));
   startScheduler();
+  startServerWatchers();
 }
 
 export default app;

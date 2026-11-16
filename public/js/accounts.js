@@ -1,9 +1,10 @@
 import { api, esc, toast } from './api.js';
+import { icon } from './icons.js';
 
 export const PLATFORM_META = {
-  youtube: { label: 'YouTube Shorts', short: 'YouTube', icon: '▶', cls: 'yt' },
-  tiktok: { label: 'TikTok', short: 'TikTok', icon: '♪', cls: 'tt' },
-  instagram: { label: 'Instagram Reels', short: 'Instagram', icon: '◎', cls: 'ig' },
+  youtube: { label: 'YouTube Shorts', short: 'YouTube', icon: icon('youtube'), cls: 'yt' },
+  tiktok: { label: 'TikTok', short: 'TikTok', icon: icon('tiktok'), cls: 'tt' },
+  instagram: { label: 'Instagram Reels', short: 'Instagram', icon: icon('instagram'), cls: 'ig' },
 };
 
 let cache = null;
@@ -29,8 +30,8 @@ export async function renderAccounts(root) {
             : a.configured ? 'Not connected' : 'Not configured on this server (missing app keys in .env)'}</div></div>
         ${a.avatar ? `<img class="avatar" src="${esc(a.avatar)}" alt="">` : ''}
         ${a.connected
-          ? '<button class="btn sm danger disconnect">Disconnect</button>'
-          : `<a class="btn sm primary ${a.configured ? '' : 'disabled'}" ${a.configured ? `href="/connect/${a.platform}"` : ''}>Connect</a>`}
+          ? `<button class="btn sm danger disconnect">${icon('x')}Disconnect</button>`
+          : `<a class="btn sm primary ${a.configured ? '' : 'disabled'}" ${a.configured ? `href="/connect/${a.platform}"` : ''}>${icon('link')}Connect</a>`}
       </div>`;
     }).join('')}</div>`;
   root.querySelectorAll('.disconnect').forEach((b) => {

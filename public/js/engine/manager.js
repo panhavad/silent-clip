@@ -118,7 +118,7 @@ export class WatcherManager extends EventTarget {
       case 'log': this.log(login, msg.message); break;
       case 'moment':
         st.jobs.set(msg.id, { id: msg.id, stage: 'capturing', progress: 0, moment: msg.moment, startedAt: Date.now() });
-        this.log(login, `🔥 ${msg.moment.manual ? 'Manual clip' : `Viral moment (score ${msg.moment.score})`} — capturing next ${msg.readyIn}s`);
+        this.log(login, `${msg.moment.manual ? 'Manual clip' : `Viral moment (score ${msg.moment.score})`} - capturing next ${msg.readyIn}s`);
         break;
       case 'clipFailed': {
         const job = st.jobs.get(msg.id);
@@ -181,7 +181,7 @@ export class WatcherManager extends EventTarget {
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Upload failed (${res.status})`);
       const clip = await res.json();
       Object.assign(job, { stage: 'done', progress: 1, clipId: clip.id, title: clip.title });
-      this.log(login, `✅ Saved clip “${clip.title}”`);
+      this.log(login, `Saved clip "${clip.title}"`);
       this.#emit('clip', { login, clip });
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         new Notification(`New clip: ${login}`, { body: clip.title, icon: clip.thumbUrl || undefined });

@@ -184,3 +184,34 @@ main { padding: 24px; max-width: 1400px; margin: 0 auto; }
 .post-list { display: grid; gap: 6px; }
 .post-list .item { display: flex; gap: 8px; align-items: center; font-size: 12px; background: var(--panel-2); border-radius: 8px; padding: 6px 8px; }
 @media (max-width: 1000px) { .calendar.week { grid-template-columns: 1fr; } }
+
+/* ---------- icons ---------- */
+.ic { width: 1.1em; height: 1.1em; flex: none; vertical-align: -0.18em; }
+.btn .ic, .tab .ic, .seg button .ic { margin-right: 1px; }
+.seg button { display: inline-flex; align-items: center; gap: 6px; }
+.brand .logo .ic { width: 18px; height: 18px; color: #fff; }
+.plat .ic { width: 13px; height: 13px; color: #fff; }
+.plat-logo .ic { width: 20px; height: 20px; color: #fff; }
+.btn.yt .ic, .btn.tt .ic, .btn.ig .ic { color: #fff; }
+.score .ic, .ic.hot { color: #ff9b3d; }
+.ic.ok { color: var(--ok); } .ic.bad { color: var(--bad); }
+.ic.rec { color: #ff4d5e; }
+.ic.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.job .row > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
+.post-card .st, .post-list .item b { display: inline-flex; align-items: center; gap: 4px; }
+.live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ff2d55; margin-right: 6px; box-shadow: 0 0 0 3px rgba(255, 45, 85, .2); }
+.notice.info { background: rgba(47, 123, 255, .12); border-color: rgba(47, 123, 255, .4); color: #b9d5ff; text-align: center; }
+
+/* ---------- admin ---------- */
+.table-wrap { overflow-x: auto; }
+table.users { width: 100%; border-collapse: collapse; font-size: 14px; }
+table.users th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+table.users td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.users tr:hover td { background: rgba(47, 123, 255, .04); }
+table.users select { width: auto; padding: 5px 8px; }
+.avatar.initials { display: grid; place-items: center; font-weight: 700; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); flex: none; }
+.badge.st-pending { background: rgba(255, 181, 71, .15); color: var(--warn); }
+.badge.st-active { background: rgba(16, 201, 143, .15); color: var(--ok); }
+.badge.st-disabled { background: rgba(255, 92, 108, .15); color: var(--bad); }
+.admin-badge { background: rgba(47, 123, 255, .2); color: #8fbaff; }

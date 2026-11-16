@@ -1,12 +1,20 @@
-# SlientClip ✂️
+# SlientClip
 
 Auto-clip the most viral moments from Twitch live streams into vertical **YouTube Shorts / TikTok / Instagram Reels** — with captions, title, description, viral point and hashtags.
 
-**All watching, chat analysis, cutting and 9:16 rendering run in the user's browser** (Web Workers + ffmpeg.wasm). The server stores data (accounts, streamers, finished clips, schedules) and, for publishing, hands the finished MP4 to YouTube / TikTok / Instagram through each user's linked account — so scheduled posts go out even when nobody has the app open. No video processing happens on the server.
+Each user chooses **where watching and clipping run**:
+
+- **Browser** (default): watching, chat analysis, cutting and 9:16 rendering run in the user's browser (Web Workers + ffmpeg.wasm). The server only stores the results.
+- **Server**: the same pipeline runs inside the server (native ffmpeg + Whisper on Node), so clipping continues after the user closes the web app or turns off their computer.
+
+The server also stores data (accounts, streamers, finished clips, schedules) and, for publishing, hands the finished MP4 to YouTube / TikTok / Instagram through each user's linked account, so scheduled posts go out even when nobody has the app open.
 
 ## Features
 
-- Email/password accounts + **Google single sign-on**
+- Email/password accounts + **Google single sign-on**; **new accounts need admin approval**
+- **Admin console**: approve, disable/enable, create, reset passwords, change roles and delete any account; per-user usage; **whole-database backup / restore** (clip video files excluded)
+- **Settings backup**: every user can download their settings, auto-publish schedule and streamer list as a file and restore it any time (merge or replace)
+- **Run on server** option: watch and clip on the server so it keeps clipping when the web is closed
 - Add Twitch streamers by link (`https://www.twitch.tv/name`) — watching starts automatically when they go live
 - **Multi-stream watching** — one worker per streamer, any number at once
 - **Background mode** (silent, inside the app tab — it may sit in a background tab) or **Foreground mode** (one browser window per streamer, or one grid window, with live players)
@@ -99,23 +107,32 @@ On a new commit it runs `git reset --hard origin/<branch>` and `docker compose u
 
 ## Using it
 
-1. Sign in → **Streamers** → paste Twitch links.
-2. **Live monitor** → choose **Background** or **Foreground** → **Start watching**.
+1. Sign in (the first account is the administrator; later sign-ups wait in **Admin → Accounts** until approved) → **Streamers** → paste Twitch links.
+2. **Live monitor** → choose **Browser** or **Server**, then (browser) **Background** or **Foreground** → **Start watching**.
+   - **Server** keeps watching and clipping after you close the page; come back any time to see progress and clips. The choice survives server restarts and auto-updates.
    - Foreground opens a window per streamer (or one grid window). If the browser blocks pop-ups, allow them for the site or use **Watch in window** per streamer.
    - Each streamer is watched by exactly one window/tab at a time (Web Locks), so modes can be mixed safely.
 3. When chat explodes, the card shows *Capturing → Rendering 9:16 → Saved*. **Clip now** captures manually.
 4. **Clips** → review, tweak title/description/hashtags/caption (re-render), then click **YouTube Shorts**, **TikTok** or **Instagram** → **Post now** or **Schedule** (or *post manually* if the account isn't linked). Downloaded/posted clips leave the *New* list.
 5. **Schedule** → turn on **Auto-publish**, set posting times/days per platform and a minimum viral score. The calendar shows what goes out when; drag a post to another day, or click it to post now, reschedule, retry or unschedule.
 
+### Accounts & administration
+
+- The first account ever created (or the account with `ADMIN_EMAIL`) is an active administrator. Everyone else who signs up (email or Google) is **pending** until an admin approves them; set `REQUIRE_APPROVAL=false` to skip approval.
+- **Admin → Accounts**: approve, disable / enable (signs the user out and stops their server watchers), create accounts (blank password = generated temporary password shown once), reset passwords, promote / demote admins, delete accounts with all their clips. The last active admin cannot be removed or demoted.
+- **Admin → Database backup** downloads a consistent SQLite copy (`VACUUM INTO`) of everything except the video files. **Restore** validates the file, swaps it in and restarts the server (Docker restarts the container). Linked-account tokens in a backup only work with the same `APP_SECRET` / `data/secret.key`.
+- **Settings → Backup & restore settings** (every user): JSON file with clipping settings, auto-publish schedule and streamers; restore merges or replaces the streamer list. Clips and linked-account tokens are not included.
+
 ### Settings
 
-Sensitivity (1–10), seconds before/after the viral point, chat reaction delay, cooldown, max clips/hour, layout (blur / crop), output resolution (540p / 720p / 1080p), hook + chat captions (on by default), auto subtitles (on by default) and subtitle language (auto = streamer's Twitch language), keep raw source (for re-rendering), default mode, auto-start.
+Sensitivity (1–10), seconds before/after the viral point, chat reaction delay, cooldown, max clips/hour, layout (blur / crop), output resolution (540p / 720p / 1080p), hook + chat captions (on by default), auto subtitles (on by default) and subtitle language (auto = streamer's Twitch language), keep raw source (for re-rendering), run on browser or server, default mode, auto-start.
 
 The speech model (~100 MB, `onnx-community/whisper-base_timestamped`) is downloaded from Hugging Face the first time a browser captions a clip and cached afterwards. Subtitles can be corrected per clip (`start-end | text` lines) and re-rendered.
 
 ## Notes & limitations
 
-- Keep at least one app tab/window open while watching — processing happens in the browser by design. Chrome/Edge (desktop) recommended. A 30 s 720p clip takes roughly 1.5–2 minutes (transcription + render) on a typical laptop.
+- In **Browser** mode keep at least one app tab/window open while watching. In **Server** mode nothing needs to stay open; the server needs CPU for rendering (about 15-30 s per clip with native ffmpeg, plus transcription) and clips are processed one at a time. Limits: `MAX_SERVER_STREAMERS` per user (default 10) and `MAX_SERVER_WATCHERS` in total (default 50).
+- Browser mode: Chrome/Edge (desktop) recommended. A 30 s 720p clip takes roughly 1.5–2 minutes (transcription + render) on a typical laptop.
 - During Twitch **ad breaks** anonymous viewers receive ads instead of the stream; those seconds can't be clipped. Setting `TWITCH_AUTH_TOKEN` to a Turbo/subscriber account's token avoids this.
 - Publishing uses each platform's official API, so the platform rules above apply (app review / audit for public posting, Instagram Professional accounts, YouTube quota). Failed uploads are retried 3 times and shown in red on the calendar.
 - Auto-publish plans 7 days ahead; slots beyond that fill in as new clips arrive. A clip is never auto-posted twice to the same platform, and unscheduling a planned post keeps that clip off that platform's plan.

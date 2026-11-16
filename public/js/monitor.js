@@ -1,10 +1,14 @@
 import { esc } from './api.js';
+import { icon } from './icons.js';
 
 const STATUS_LABEL = {
   starting: 'Starting', checking: 'Checking', offline: 'Offline', live: 'Live', connecting: 'Connecting',
   watching: 'Watching live', error: 'Error', elsewhere: 'In other window',
 };
-const STAGE_LABEL = { capturing: '⏺ Capturing', transcribing: '📝 Transcribing speech', rendering: '🎬 Rendering 9:16', uploading: '⬆ Saving', done: '✅ Saved', failed: '⚠ Failed' };
+const STAGE_LABEL = {
+  capturing: `${icon('record', 'rec')}Capturing`, queued: `${icon('clock')}Queued on server`, transcribing: `${icon('captions')}Transcribing speech`,
+  rendering: `${icon('film')}Rendering 9:16`, uploading: `${icon('upload')}Saving`, done: `${icon('check-circle', 'ok')}Saved`, failed: `${icon('alert', 'bad')}Failed`,
+};
 
 function drawSpark(canvas, rates = [], heat = 0) {
   const dpr = devicePixelRatio || 1;
@@ -55,10 +59,10 @@ export function mountMonitors(container, manager, { showPlayers = false, onPopou
           <div>Spike<b class="s-ratio">–</b></div><div>Buffer<b class="s-buf">–</b></div>
         </div>
         <div class="row">
-          <button class="btn sm primary clip-now">✂ Clip now</button>
-          ${onPopout ? '<button class="btn sm popout">⧉ Watch in window</button>' : ''}
+          <button class="btn sm primary clip-now">${icon('scissors')}Clip now</button>
+          ${onPopout ? `<button class="btn sm popout">${icon('window')}Watch in window</button>` : ''}
           <span class="spacer"></span>
-          <a class="btn sm ghost twitch-link" target="_blank" rel="noopener">Twitch ↗</a>
+          <a class="btn sm ghost twitch-link" target="_blank" rel="noopener">Twitch${icon('external')}</a>
         </div>
         <div class="jobs"></div>
         <div class="log"></div>
@@ -76,7 +80,7 @@ export function mountMonitors(container, manager, { showPlayers = false, onPopou
     el.querySelector('.jobs').innerHTML = jobs.map((j) => `
       <div class="job"><div class="row"><span>${STAGE_LABEL[j.stage] || j.stage}</span><span class="spacer"></span>
         <span class="muted">${j.moment?.manual ? 'manual' : `score ${j.moment?.score ?? ''}`}</span></div>
-        ${['rendering', 'transcribing'].includes(j.stage) ? `<div class="bar"><div style="width:${Math.round((j.progress || 0) * 100)}%"></div></div>` : ''}
+        ${['rendering', 'transcribing'].includes(j.stage) && !st.worker ? `<div class="bar"><div style="width:${Math.round((j.progress || 0) * 100)}%"></div></div>` : ''}
         ${j.title ? `<div class="muted">${esc(j.title)}</div>` : ''}${j.error ? `<div style="color:var(--bad)">${esc(j.error)}</div>` : ''}
       </div>`).join('');
   }

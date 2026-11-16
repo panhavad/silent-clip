@@ -60,7 +60,7 @@ export function autopublishSettings(user) {
   return out;
 }
 
-function sanitizeAutopublish(body, current) {
+export function sanitizeAutopublish(body, current) {
   const out = { ...current, platforms: { ...current.platforms } };
   if ('enabled' in body) out.enabled = Boolean(body.enabled);
   if (body.timezone && validTz(body.timezone)) out.timezone = body.timezone;

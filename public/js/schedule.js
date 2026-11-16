@@ -1,9 +1,10 @@
 import { api, esc, toast } from './api.js';
 import { getAccounts, accountFor, PLATFORM_META } from './accounts.js';
+import { icon } from './icons.js';
 
 const DAY = 86400000;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const STATUS = { scheduled: '🕒 Scheduled', publishing: '⬆ Publishing', published: '✅ Published', failed: '⚠ Failed' };
+const STATUS = { scheduled: `${icon('clock')}Scheduled`, publishing: `${icon('loader', 'spin')}Publishing`, published: `${icon('check-circle', 'ok')}Published`, failed: `${icon('alert', 'bad')}Failed` };
 const pad = (n) => String(n).padStart(2, '0');
 const hhmm = (ts) => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const startOfDay = (ts) => { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -35,7 +36,7 @@ export class ScheduleView {
       <div class="panel">
         <div class="section-head">
           <h2 style="margin:0" class="cal-title"></h2>
-          <div class="row"><button class="btn sm cal-prev">◀</button><button class="btn sm cal-today">Today</button><button class="btn sm cal-next">▶</button></div>
+          <div class="row"><button class="btn sm cal-prev" title="Previous">${icon('chevron-left')}</button><button class="btn sm cal-today">Today</button><button class="btn sm cal-next" title="Next">${icon('chevron-right')}</button></div>
           <span class="spacer"></span>
           <div class="row small legend">${Object.entries(PLATFORM_META).map(([p, m]) => `<span class="row"><span class="plat ${p}">${m.icon}</span>${m.short}</span>`).join('')}
             <span class="row"><span class="slot-dot"></span>open slot</span></div>
@@ -86,10 +87,10 @@ export class ScheduleView {
       const m = PLATFORM_META[p];
       const acc = accountFor(this.accounts, p);
       return `<div class="ap-row" data-p="${p}">
-        <div class="row" style="min-width:210px"><div class="plat-logo ${m.cls}">${m.icon}</div><div><b>${m.label}</b><div class="small ${acc?.connected ? 'muted' : ''}" style="${acc?.connected ? '' : 'color:var(--warn)'}">${acc?.connected ? `@${esc(acc.username || acc.displayName)}` : 'Not connected — <a href="#settings">connect</a>'}</div></div></div>
+        <div class="row" style="min-width:210px"><div class="plat-logo ${m.cls}">${m.icon}</div><div><b>${m.label}</b><div class="small ${acc?.connected ? 'muted' : ''}" style="${acc?.connected ? '' : 'color:var(--warn)'}">${acc?.connected ? `@${esc(acc.username || acc.displayName)}` : 'Not connected: <a href="#settings">connect</a>'}</div></div></div>
         <label class="row small"><input type="checkbox" class="p-en" ${c.enabled ? 'checked' : ''}> Auto-post</label>
         <div class="row wrap times">${c.times.map((t) => `<span class="chip time">${t}<button title="Remove" data-t="${t}">×</button></span>`).join('')}
-          <input type="time" class="add-time" style="width:110px"><button class="btn sm add-btn">＋ time</button></div>
+          <input type="time" class="add-time" style="width:110px"><button class="btn sm add-btn">${icon('plus')}time</button></div>
         <div class="row days">${DOW.map((d, i) => `<button class="day ${c.days.includes(i) ? 'on' : ''}" data-d="${i}" title="${d}">${d[0]}</button>`).join('')}</div>
         <span class="small muted">${c.times.length}/day</span>
       </div>`;
@@ -217,7 +218,7 @@ export class ScheduleView {
       <div style="min-width:0">
         <div class="row small" style="gap:6px"><span class="plat ${p.platform}">${m.icon}</span><b>${hhmm(p.publishedAt || p.scheduledAt)}</b>${p.source === 'auto' ? '<span class="chip auto">auto</span>' : ''}</div>
         <div class="pc-title">${esc(p.clip?.title || '')}</div>
-        <div class="small st">${STATUS[p.status] || p.status}${p.clip?.score != null ? ` · 🔥${p.clip.score}` : ''}</div>
+        <div class="small st">${STATUS[p.status] || p.status}${p.clip?.score != null ? ` · ${icon('flame')}${p.clip.score}` : ''}</div>
       </div></div>`;
   }
 
@@ -226,16 +227,16 @@ export class ScheduleView {
     const back = document.createElement('div');
     back.className = 'modal-back';
     back.innerHTML = `<div class="panel" style="width:min(460px,100%);display:grid;gap:12px">
-      <div class="row"><span class="plat ${p.platform}">${m.icon}</span><h3 style="margin:0">${m.label}</h3><span class="spacer"></span><button class="btn sm ghost x">✕</button></div>
+      <div class="row"><span class="plat ${p.platform}">${m.icon}</span><h3 style="margin:0">${m.label}</h3><span class="spacer"></span><button class="btn sm ghost x" title="Close">${icon('x')}</button></div>
       <div class="row" style="align-items:flex-start"><div class="thumb-mini lg" style="background-image:url('${p.clip?.thumbUrl || ''}')"></div>
-        <div style="display:grid;gap:4px"><b>${esc(p.clip?.title || '')}</b><span class="small muted">${esc(p.clip?.streamer || '')} · 🔥${p.clip?.score ?? '–'} · ${p.source === 'auto' ? 'auto-scheduled' : 'manual'}</span>
+        <div style="display:grid;gap:4px"><b>${esc(p.clip?.title || '')}</b><span class="small muted">${esc(p.clip?.streamer || '')} · ${icon('flame')}${p.clip?.score ?? '–'} · ${p.source === 'auto' ? 'auto-scheduled' : 'manual'}</span>
         <span class="small">${STATUS[p.status]} · ${new Date(p.publishedAt || p.scheduledAt).toLocaleString()}</span>
-        ${p.url ? `<a class="small" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)} ↗</a>` : ''}
+        ${p.url ? `<a class="small" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}${icon('external')}</a>` : ''}
         ${p.error ? `<span class="small" style="color:var(--bad)">${esc(p.error)}</span>` : ''}</div></div>
       ${p.status === 'scheduled' ? `<div class="row"><input type="datetime-local" class="when" value="${localInput(p.scheduledAt)}"><button class="btn sm resched">Reschedule</button></div>` : ''}
       <div class="row wrap">
-        ${p.status === 'scheduled' ? '<button class="btn sm primary now">⬆ Post now</button>' : ''}
-        ${p.status === 'failed' ? '<button class="btn sm primary retry">↻ Retry</button>' : ''}
+        ${p.status === 'scheduled' ? `<button class="btn sm primary now">${icon('upload')}Post now</button>` : ''}
+        ${p.status === 'failed' ? `<button class="btn sm primary retry">${icon('refresh')}Retry</button>` : ''}
         <button class="btn sm open">Open clip</button><span class="spacer"></span>
         ${p.status !== 'publishing' ? `<button class="btn sm danger del">${p.status === 'scheduled' ? 'Unschedule' : 'Remove'}</button>` : ''}
       </div></div>`;

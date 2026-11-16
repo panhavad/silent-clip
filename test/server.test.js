@@ -59,9 +59,47 @@ test('auth, streamers and clip lifecycle with new/downloaded/posted tracking', a
   assert.deepEqual(list.data.counts, { all: 1, new: 0, downloaded: 1, posted: 1 });
   assert.equal(list.data.clips[0].posted.tiktok.url, 'https://www.tiktok.com/@x/video/1');
 
-  // Another user cannot see or fetch the clip.
+  // New sign-ups wait for approval; the first account is the admin.
+  assert.equal((await call('/api/me')).data.role, 'admin');
+  const adminCookie = cookie;
   cookie = '';
-  await call('/api/auth/register', { method: 'POST', body: { email: 'c@d.co', password: 'password123' } });
+  const reg = await call('/api/auth/register', { method: 'POST', body: { email: 'c@d.co', password: 'password123' } });
+  assert.equal(reg.status, 202);
+  assert.equal(reg.data.pending, true);
+  assert.equal((await call('/api/auth/login', { method: 'POST', body: { email: 'c@d.co', password: 'password123' } })).status, 403);
+
+  cookie = adminCookie;
+  const users = (await call('/api/admin/users')).data;
+  assert.equal(users.counts.pending, 1);
+  const pending = users.users.find((u) => u.email === 'c@d.co');
+  assert.equal((await call(`/api/admin/users/${pending.id}`, { method: 'PATCH', body: { status: 'active' } })).data.status, 'active');
+  const reset = await call(`/api/admin/users/${pending.id}/reset-password`, { method: 'POST', body: {} });
+  assert.ok(reset.data.password.length >= 8);
+  const me = (await call('/api/me')).data;
+  assert.equal((await call(`/api/admin/users/${me.id}`, { method: 'PATCH', body: { role: 'user' } })).status, 400, 'cannot demote yourself');
+  const created = await call('/api/admin/users', { method: 'POST', body: { email: 'e@f.co', name: 'Ed' } });
+  assert.ok(created.data.password, 'temporary password returned');
+  assert.equal(created.data.user.status, 'active');
+  assert.equal((await call(`/api/admin/users/${created.data.user.id}`, { method: 'DELETE' })).status, 200);
+  const backup = await fetch(`${base}/api/admin/backup`, { headers: { cookie } });
+  assert.equal(Buffer.from(await backup.arrayBuffer()).subarray(0, 15).toString(), 'SQLite format 3');
+
+  // The approved user signs in with the reset password, cannot see the admin's clip or admin API.
+  cookie = '';
+  assert.equal((await call('/api/auth/login', { method: 'POST', body: { email: 'c@d.co', password: reset.data.password } })).status, 200);
+  assert.equal((await call('/api/admin/users')).status, 403);
   assert.equal((await call(`/api/clips/${id}`)).status, 404);
   assert.equal((await call('/api/clips')).data.counts.all, 0);
+
+  // Settings backup round-trip.
+  await call('/api/settings', { method: 'PUT', body: { sensitivity: 8, layout: 'crop' } });
+  await call('/api/streamers', { method: 'POST', body: { url: 'twitch.tv/xqc' } });
+  const exported = (await call('/api/backup')).data;
+  assert.equal(exported.type, 'user-settings');
+  assert.deepEqual(exported.streamers.map((s) => s.login), ['xqc']);
+  await call('/api/settings', { method: 'PUT', body: { sensitivity: 2 } });
+  exported.streamers.push({ login: 'jynxzi', enabled: false });
+  assert.equal((await call('/api/backup/restore', { method: 'POST', body: { backup: exported, mode: 'replace' } })).status, 200);
+  assert.equal((await call('/api/me')).data.settings.sensitivity, 8);
+  assert.deepEqual((await call('/api/streamers')).data.map((s) => [s.login, s.enabled]), [['xqc', true], ['jynxzi', false]]);
 });
