@@ -50,8 +50,9 @@ async function hostRepoPath() {
 }
 
 async function compose(args, env = {}) {
-  const { stdout, stderr } = await run('docker', ['compose', '-p', COMPOSE_PROJECT, '--project-directory', REPO_DIR, '-f', `${REPO_DIR}/docker-compose.yml`, ...args],
-    { maxBuffer: 50 * 1024 * 1024, env: { ...process.env, ...env } });
+  // Run from the repo dir without -f so docker-compose.override.yml (if any) is honoured too.
+  const { stdout, stderr } = await run('docker', ['compose', '-p', COMPOSE_PROJECT, ...args],
+    { cwd: REPO_DIR, maxBuffer: 50 * 1024 * 1024, env: { ...process.env, ...env } });
   return `${stdout}\n${stderr}`.trim();
 }
 
@@ -75,8 +76,8 @@ async function update(reason) {
       // Recreating ourselves would kill this process mid-command, so hand off to a one-shot helper.
       log('Updater changed - rebuilding it via helper container');
       await run('docker', ['run', '-d', '--rm', '-v', '/var/run/docker.sock:/var/run/docker.sock', '-v', `${hostPath}:${REPO_DIR}`,
-        '-e', `REPO_HOST_PATH=${hostPath}`, '--entrypoint', 'docker', `${COMPOSE_PROJECT}-updater`,
-        'compose', '-p', COMPOSE_PROJECT, '--project-directory', REPO_DIR, '-f', `${REPO_DIR}/docker-compose.yml`, 'up', '-d', '--build', '--no-deps', 'updater']);
+        '-w', REPO_DIR, '-e', `REPO_HOST_PATH=${hostPath}`, '--entrypoint', 'docker', `${COMPOSE_PROJECT}-updater`,
+        'compose', '-p', COMPOSE_PROJECT, 'up', '-d', '--build', '--no-deps', 'updater']);
     }
     state.head = remoteHead;
     state.lastUpdate = { at: new Date().toISOString(), commit: remoteHead, reason };
