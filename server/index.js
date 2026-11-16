@@ -44,7 +44,10 @@ const vendorOpts = { maxAge: '7d', immutable: true };
 app.use('/vendor/ffmpeg', express.static(nm('@ffmpeg/ffmpeg/dist/esm'), vendorOpts));
 app.use('/vendor/ffmpeg-util', express.static(nm('@ffmpeg/util/dist/esm'), vendorOpts));
 app.use('/vendor/ffmpeg-core', express.static(nm('@ffmpeg/core/dist/esm'), vendorOpts));
-app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
+app.use('/vendor/transformers', express.static(nm('@huggingface/transformers/dist'), vendorOpts));
+app.use('/vendor/ort', express.static(nm('onnxruntime-web/dist'), vendorOpts));
+// App code must revalidate on every load so browsers pick up auto-deployed updates immediately.
+app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 
 // ---------- config / auth ----------
 app.get('/api/config', (_req, res) => {
@@ -252,7 +255,15 @@ app.put('/api/clips/:id/video', clipFiles, (req, res) => {
     storeFile(req, 'video', path.join(dir, r.video_file));
     const thumb = storeFile(req, 'thumb', path.join(dir, `${r.id}.jpg`)) || r.thumb_file;
     const caption = req.body.caption !== undefined ? String(req.body.caption).slice(0, 500) : r.caption;
-    db.prepare('UPDATE clips SET size = ?, thumb_file = ?, caption = ? WHERE id = ?').run(size, thumb, caption, r.id);
+    const viral = json(r.viral, {});
+    if (req.body.subtitles !== undefined) {
+      const subs = json(req.body.subtitles, []);
+      viral.subtitles = Array.isArray(subs)
+        ? subs.slice(0, 200).map((s) => ({ text: String(s.text || '').slice(0, 120), start: Number(s.start) || 0, end: Number(s.end) || 0 }))
+        : [];
+    }
+    if (req.body.transcript !== undefined) viral.transcript = String(req.body.transcript).slice(0, 5000);
+    db.prepare('UPDATE clips SET size = ?, thumb_file = ?, caption = ?, viral = ? WHERE id = ?').run(size, thumb, caption, JSON.stringify(viral), r.id);
     res.json(clipRow(getClip(req)));
   } finally { cleanupTmp(req); }
 });

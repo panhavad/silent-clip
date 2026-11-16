@@ -13,14 +13,16 @@ export async function gql(query, variables = {}) {
   return json.data;
 }
 
-const CHANNEL_FIELDS = `id login displayName profileImageURL(width: 70)
+const CHANNEL_FIELDS = `id login displayName profileImageURL(width: 70) broadcastSettings { language }
   stream { id title type viewersCount createdAt game { name } }`;
 
 function mapChannel(u) {
   if (!u) return null;
   const s = u.stream;
+  const lang = String(u.broadcastSettings?.language || '').toLowerCase();
   return {
     id: u.id, login: u.login, displayName: u.displayName, avatar: u.profileImageURL,
+    language: /^[a-z]{2}$/.test(lang) ? lang : '',
     live: Boolean(s && s.type === 'live'),
     streamId: s?.id || null, title: s?.title || '', game: s?.game?.name || '',
     viewers: s?.viewersCount || 0, startedAt: s?.createdAt || null,

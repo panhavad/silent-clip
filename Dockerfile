@@ -2,7 +2,8 @@ FROM node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production DATA_DIR=/data PORT=8080
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# transformers.js is only served to browsers; drop its unused Node-native backends.
+RUN npm ci --omit=dev --ignore-scripts && rm -rf node_modules/onnxruntime-node node_modules/sharp node_modules/@img && npm cache clean --force
 COPY server ./server
 COPY public ./public
 RUN mkdir -p /data && chown node:node /data

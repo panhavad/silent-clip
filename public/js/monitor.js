@@ -4,7 +4,7 @@ const STATUS_LABEL = {
   starting: 'Starting', checking: 'Checking', offline: 'Offline', live: 'Live', connecting: 'Connecting',
   watching: 'Watching live', error: 'Error', elsewhere: 'In other window',
 };
-const STAGE_LABEL = { capturing: '⏺ Capturing', rendering: '🎬 Rendering 9:16', uploading: '⬆ Saving', done: '✅ Saved', failed: '⚠ Failed' };
+const STAGE_LABEL = { capturing: '⏺ Capturing', transcribing: '📝 Transcribing speech', rendering: '🎬 Rendering 9:16', uploading: '⬆ Saving', done: '✅ Saved', failed: '⚠ Failed' };
 
 function drawSpark(canvas, rates = [], heat = 0) {
   const dpr = devicePixelRatio || 1;
@@ -76,7 +76,7 @@ export function mountMonitors(container, manager, { showPlayers = false, onPopou
     el.querySelector('.jobs').innerHTML = jobs.map((j) => `
       <div class="job"><div class="row"><span>${STAGE_LABEL[j.stage] || j.stage}</span><span class="spacer"></span>
         <span class="muted">${j.moment?.manual ? 'manual' : `score ${j.moment?.score ?? ''}`}</span></div>
-        ${j.stage === 'rendering' ? `<div class="bar"><div style="width:${Math.round((j.progress || 0) * 100)}%"></div></div>` : ''}
+        ${['rendering', 'transcribing'].includes(j.stage) ? `<div class="bar"><div style="width:${Math.round((j.progress || 0) * 100)}%"></div></div>` : ''}
         ${j.title ? `<div class="muted">${esc(j.title)}</div>` : ''}${j.error ? `<div style="color:var(--bad)">${esc(j.error)}</div>` : ''}
       </div>`).join('');
   }

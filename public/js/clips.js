@@ -1,6 +1,8 @@
 import { api, esc, toast, timeAgo } from './api.js';
 import { uploadToYouTube, shareClip, postText, UPLOAD_PAGES } from './publish.js';
 import { renderClip } from './engine/render.js';
+import { autoSubtitles, phrasesToText, textToPhrases } from './engine/transcribe.js';
+import { getChannel } from './engine/twitch.js';
 
 const PLAT_LABEL = { youtube: 'YouTube', tiktok: 'TikTok', instagram: 'Instagram' };
 const PLAT_ICON = { youtube: '▶', tiktok: '♪', instagram: '◎' };
@@ -22,11 +24,13 @@ export class ClipLibrary {
           <button data-f="downloaded">Downloaded <span class="c-downloaded"></span></button>
           <button data-f="posted">Posted <span class="c-posted"></span></button>
         </div>
+        <button class="btn sm caption-all" title="Re-render clips that don't have subtitles yet">📝 Caption all clips</button>
         <button class="btn sm refresh">↻ Refresh</button>
       </div>
       <div class="clip-grid"></div>`;
     root.querySelectorAll('.filters button').forEach((b) => { b.onclick = () => { this.filter = b.dataset.f; this.load(); }; });
     root.querySelector('.refresh').onclick = () => this.load();
+    root.querySelector('.caption-all').onclick = (e) => this.captionAll(e.currentTarget).catch((err) => toast(err.message, 'error'));
   }
 
   async load() {
@@ -45,6 +49,7 @@ export class ClipLibrary {
         <div class="thumb" style="background-image:url('${c.thumbUrl || ''}')">
           <div class="flags">
             ${c.isNew ? '<span class="badge new">New</span>' : ''}
+            ${c.viral.subtitles?.length ? '<span class="badge" title="Has spoken subtitles">CC</span>' : ''}
             ${c.downloadedAt ? '<span class="plat dl" title="Downloaded">⬇</span>' : ''}
             ${Object.keys(c.posted).map((p) => `<span class="plat ${p}" title="Posted to ${PLAT_LABEL[p]}">${PLAT_ICON[p]}</span>`).join('')}
           </div>
@@ -74,6 +79,64 @@ export class ClipLibrary {
     return updated;
   }
 
+  /**
+   * Re-render a clip from its stored raw source (in the browser) with hook caption, chat bubble
+   * and subtitles. With `autoTranscribe` and no subtitles given, speech is transcribed first.
+   */
+  async rerender(clip, { caption = clip.caption, chat = true, subtitles = [], autoTranscribe = true, onStatus = () => {} } = {}) {
+    const v = clip.viral || {};
+    const s = v.source || {};
+    onStatus('Loading source…');
+    const res = await fetch(`/api/clips/${clip.id}/source`);
+    if (!res.ok) throw new Error('Raw source was not kept for this clip');
+    const src = { bytes: new Uint8Array(await res.arrayBuffer()), ext: s.ext || 'ts', offsetSec: s.offset || 0, durationSec: s.duration || clip.duration || 30 };
+    let transcript;
+    if (!subtitles.length && autoTranscribe) {
+      onStatus('Transcribing speech…');
+      const language = v.language || (await getChannel(clip.streamer).catch(() => null))?.language || '';
+      const sub = await autoSubtitles({
+        ...src, language,
+        onProgress: (p) => onStatus(p < 1 ? `Loading speech model ${Math.round(p * 100)}%` : 'Transcribing speech…'),
+      });
+      subtitles = sub.phrases;
+      transcript = sub.text;
+    }
+    const out = await renderClip({
+      ...src, caption, chatLine: chat ? (v.chatLine || '') : '', login: clip.streamer, subtitles,
+      layout: s.layout || 'blur', resolution: s.resolution || '720x1280', captions: true, thumbAt: v.offsetInClip ?? 20,
+      onProgress: (p) => onStatus(`Rendering ${Math.round(p * 100)}%`),
+    });
+    onStatus('Saving…');
+    const form = new FormData();
+    form.append('video', out.video, 'clip.mp4');
+    if (out.thumb) form.append('thumb', out.thumb, 'thumb.jpg');
+    form.append('caption', caption);
+    form.append('subtitles', JSON.stringify(subtitles));
+    if (transcript !== undefined) form.append('transcript', transcript);
+    Object.assign(clip, await api(`/api/clips/${clip.id}/video`, { method: 'PUT', form }));
+    return clip;
+  }
+
+  // Add captions + auto subtitles to every clip that doesn't have subtitles yet.
+  async captionAll(btn) {
+    const { clips } = await api('/api/clips?filter=all');
+    const todo = clips.filter((c) => c.hasSource && !(c.viral?.subtitles?.length));
+    if (!todo.length) { toast('All clips already have captions and subtitles', 'ok'); return; }
+    if (!confirm(`Add captions + subtitles to ${todo.length} clip(s)? Rendering runs in this tab (~1–2 min per clip).`)) return;
+    btn.disabled = true;
+    let done = 0;
+    for (const c of todo) {
+      try {
+        await this.rerender(c, { onStatus: (t) => { btn.textContent = `📝 ${done + 1}/${todo.length}: ${t}`; } });
+      } catch (e) { toast(`${c.title}: ${e.message}`, 'error'); }
+      done++;
+    }
+    btn.disabled = false;
+    btn.textContent = '📝 Caption all clips';
+    toast(`Captioned ${done} clip(s)`, 'ok');
+    this.load();
+  }
+
   open(clip) {
     const back = document.createElement('div');
     back.className = 'modal-back';
@@ -98,7 +161,9 @@ export class ClipLibrary {
           <div class="row"><button class="btn sm save">💾 Save details</button><button class="btn sm copy">📋 Copy post text</button></div>
           <label class="field">On-video caption ${clip.hasSource ? '' : '(source not kept — cannot re-render)'}
             <div class="row"><input type="text" class="f-caption" maxlength="80"><label class="row small"><input type="checkbox" class="f-chat" checked> chat bubble</label></div></label>
-          <div class="row"><button class="btn sm rerender" ${clip.hasSource ? '' : 'disabled'}>🎬 Re-render with caption</button><span class="rr-status muted small"></span></div>
+          <label class="field">Subtitles (<code>start-end | text</code> per line — leave empty to auto-transcribe on re-render)
+            <textarea class="f-subs" rows="5" style="font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea></label>
+          <div class="row"><button class="btn sm rerender" ${clip.hasSource ? '' : 'disabled'}>🎬 Re-render with captions</button><label class="row small"><input type="checkbox" class="f-subs-on" checked> subtitles</label><span class="rr-status muted small"></span></div>
           <hr style="border-color:var(--border);width:100%">
           <div class="row wrap">
             <a class="btn primary download" href="/api/clips/${clip.id}/download">⬇ Download MP4</a>
@@ -117,6 +182,7 @@ export class ClipLibrary {
     $('.f-desc').value = clip.description;
     $('.f-tags').value = clip.hashtags.join(' ');
     $('.f-caption').value = clip.caption;
+    $('.f-subs').value = phrasesToText(v.subtitles);
 
     const close = () => { back.remove(); this.load(); };
     $('.close').onclick = close;
@@ -149,22 +215,15 @@ export class ClipLibrary {
       btn.disabled = true;
       const status = $('.rr-status');
       try {
-        status.textContent = 'Loading source…';
-        const src = new Uint8Array(await (await fetch(`/api/clips/${clip.id}/source`)).arrayBuffer());
-        const s = v.source || {};
-        const caption = $('.f-caption').value.trim();
-        const out = await renderClip({
-          bytes: src, ext: s.ext || 'ts', offsetSec: s.offset || 0, durationSec: s.duration || clip.duration || 30,
-          caption, chatLine: $('.f-chat').checked ? (v.chatLine || '') : '', login: clip.streamer,
-          layout: s.layout || 'blur', resolution: s.resolution || '720x1280', captions: true, thumbAt: v.offsetInClip ?? 20,
-          onProgress: (p) => { status.textContent = `Rendering ${Math.round(p * 100)}%`; },
+        await this.rerender(clip, {
+          caption: $('.f-caption').value.trim(),
+          chat: $('.f-chat').checked,
+          subtitles: $('.f-subs-on').checked ? textToPhrases($('.f-subs').value) : [],
+          autoTranscribe: $('.f-subs-on').checked,
+          onStatus: (t) => { status.textContent = t; },
         });
-        status.textContent = 'Saving…';
-        const form = new FormData();
-        form.append('video', out.video, 'clip.mp4');
-        if (out.thumb) form.append('thumb', out.thumb, 'thumb.jpg');
-        form.append('caption', caption);
-        Object.assign(clip, await api(`/api/clips/${clip.id}/video`, { method: 'PUT', form }));
+        Object.assign(v, clip.viral);
+        $('.f-subs').value = phrasesToText(v.subtitles);
         video.src = `${clip.videoUrl}?t=${Date.now()}`;
         status.textContent = 'Done ✓';
       } catch (err) {

@@ -1,5 +1,6 @@
 import { buildMetadata } from './meta.js';
 import { renderClip } from './render.js';
+import { autoSubtitles } from './transcribe.js';
 
 const WORKER_URL = new URL('./watcher.worker.js', import.meta.url);
 
@@ -141,10 +142,30 @@ export class WatcherManager extends EventTarget {
       const meta = buildMetadata({ moment: msg.moment, channel: msg.channel || st.channel, login });
       const { bytes, ext, offsetSec, durationSec } = msg.data;
       const source = s.keepSource ? new Blob([bytes], { type: ext === 'mp4' ? 'video/mp4' : 'video/mp2t' }) : null;
+      let subtitles = [];
+      if (s.subtitles) {
+        job.stage = 'transcribing';
+        this.#changed(login);
+        try {
+          const sub = await autoSubtitles({
+            bytes, ext, offsetSec, durationSec, language: s.subtitleLanguage || meta.viral.language,
+            onProgress: (p) => { job.progress = p; this.#emit('job', { login, job }); },
+          });
+          subtitles = sub.phrases;
+          meta.viral.transcript = sub.text;
+          if (sub.text) meta.description = meta.description.replace('\n\nWatch ', `\n🗣️ "${sub.text.slice(0, 140)}${sub.text.length > 140 ? '…' : ''}"\n\nWatch `);
+        } catch (e) {
+          this.log(login, `Subtitles skipped: ${e?.message || e}`);
+        }
+        job.stage = 'rendering';
+        job.progress = 0;
+        this.#changed(login);
+      }
+      meta.viral.subtitles = subtitles;
       const out = await renderClip({
         bytes, ext, offsetSec, durationSec, login, layout: s.layout, resolution: s.resolution,
         captions: s.captions, caption: s.captions ? meta.caption : '', chatLine: s.captions ? meta.viral.chatLine : '',
-        thumbAt: msg.moment.viralOffset,
+        subtitles, thumbAt: msg.moment.viralOffset,
         onProgress: (p) => { job.progress = p; this.#emit('job', { login, job }); },
       });
       job.stage = 'uploading';

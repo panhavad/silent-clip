@@ -68,7 +68,9 @@ export const DEFAULT_SETTINGS = {
   preRollSec: 20,
   postRollSec: 10,
   reactionDelaySec: 3,
-  captions: true,
+  captions: true,              // burn hook headline + chat bubble into every clip
+  subtitles: true,             // burn spoken-word subtitles (in-browser speech-to-text) into every clip
+  subtitleLanguage: '',        // '' = auto-detect, or a Whisper language code like 'en'
   layout: 'blur',              // blur | crop
   resolution: '720x1280',
   keepSource: true,

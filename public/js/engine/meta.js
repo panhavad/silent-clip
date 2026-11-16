@@ -84,6 +84,7 @@ export function buildMetadata({ moment, channel, login }) {
     ratio: moment.ratio, z: moment.z, peakRate: moment.peakRate, baselineRate: moment.baselineRate,
     chatters: moment.chatters, messages: moment.msgs, topWords: moment.topWords, topMessages: moment.topMessages,
     samples: moment.samples, streamTitle: channel?.title || '', game, viewers: channel?.viewers || 0, chatLine,
+    language: channel?.language || '',
   };
   return { title, description, hashtags, caption, viral };
 }

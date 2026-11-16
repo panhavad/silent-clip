@@ -76,3 +76,21 @@ test('parseIrc extracts user, text and emote names', () => {
   assert.equal(m.text, 'Kappa hello Kappa');
   assert.deepEqual(m.emotes, ['Kappa', 'Kappa']);
 });
+
+test('toPhrases groups words into short timed phrases and drops silence hallucinations', async () => {
+  const { toPhrases, phrasesToText, textToPhrases } = await import('../public/js/engine/transcribe.js');
+  const w = (text, s, e) => ({ text: ` ${text}`, timestamp: [s, e] });
+  const result = { chunks: [
+    w('no', 0.5, 0.7), w('way', 0.7, 0.9), w('he', 0.9, 1.0), w('actually', 1.0, 1.4), w('hit', 1.4, 1.6), w('that!', 1.6, 2.0),
+    w('Chat', 4.0, 4.3), w('is', 4.3, 4.4), w('going', 4.4, 4.7), w('crazy', 4.7, 5.1),
+    w('P', 10.0, 10.1), w('-o', 10.1, 10.2), w('-v', 10.2, 10.3), w('y', 10.3, 10.4),
+    w('yeah', 12.0, 19.0),
+    { text: ' Thank you.', timestamp: [28.0, null] },
+  ] };
+  const phrases = toPhrases(result, 30);
+  assert.deepEqual(phrases.map((p) => p.text), ['no way he actually', 'hit that!', 'Chat is going crazy', 'yeah']);
+  assert.equal(phrases[0].start, 0.5);
+  assert.equal(phrases[0].end, 1.4, 'extends to the next phrase when the gap is tiny');
+  assert.deepEqual([phrases[3].start, phrases[3].end], [15.5, 19], 'overlong word timing is capped to 3.5s');
+  assert.deepEqual(textToPhrases(phrasesToText(phrases)).map((p) => p.text), phrases.map((p) => p.text));
+});
