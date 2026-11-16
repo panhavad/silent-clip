@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SlientClip — watching</title>
+  <link rel="stylesheet" href="/css/app.css">
+  <style>
+    main { max-width: none; padding: 14px; }
+    .monitors { grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="logo">✂</div>SlientClip</div>
+    <span class="muted small win-title">Foreground watcher</span>
+    <span class="spacer"></span>
+    <a class="btn sm" href="/#clips" target="slientclip-dashboard">Clip library ↗</a>
+  </header>
+  <main><div class="monitors"></div></main>
+  <script type="module" src="/js/watch.js"></script>
+</body>
+</html>
