@@ -39,7 +39,7 @@ async function setupRepo() {
     await git('remote', remotes.split('\n').includes('origin') ? 'set-url' : 'add', 'origin', remote);
   }
   state.head = await git('rev-parse', 'HEAD').catch(() => null);
-  log(`Tracking ${repo}@${GITHUB_BRANCH} at ${state.head?.slice(0, 7) || 'unknown'}`);
+  log(`Tracking ${repo || 'custom remote'}@${GITHUB_BRANCH} at ${state.head?.slice(0, 7) || 'unknown'}`);
 }
 
 async function hostRepoPath() {

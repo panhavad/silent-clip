@@ -12,6 +12,7 @@ import {
 import { masterPlaylist } from './twitch.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const { version } = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const PORT = Number(process.env.PORT || 8080);
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 300);
 
@@ -19,7 +20,7 @@ const app = express();
 app.set('trust proxy', true);
 app.disable('x-powered-by');
 
-app.get('/healthz', (_req, res) => res.json({ ok: true }));
+app.get('/healthz', (_req, res) => res.json({ ok: true, version }));
 
 // GitHub push webhook -> forwarded verbatim to the updater sidecar (it verifies the signature).
 app.post('/hooks/github', express.raw({ type: '*/*', limit: '5mb' }), async (req, res) => {
