@@ -142,8 +142,10 @@ The speech model (~100 MB, `onnx-community/whisper-base_timestamped`) is downloa
 
 ```bash
 npm install
-npm run dev        # http://localhost:8080 (DATA_DIR defaults to ./data)
+npm run dev        # http://localhost:8080 — loads .env if present, restarts when server/ or public/js/engine/ change
 npm test           # analyzer, HLS parser, chat parser, API tests
 ```
 
-Requires Node ≥ 22.13 (uses the built-in `node:sqlite`).
+Requires Node ≥ 22.13 (uses the built-in `node:sqlite`). `DATA_DIR` defaults to `./data`; set it to point the dev server at another data folder. Front-end files are served uncached, so a browser reload picks up CSS/JS edits without a restart. Server-side watching needs `ffmpeg` on the PATH (the Docker image includes it).
+
+The UI is responsive: on phones the tabs scroll sideways, clips show two per row, the clip editor opens full screen, the calendar collapses to one column, and the admin table turns into cards.

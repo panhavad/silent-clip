@@ -84,11 +84,11 @@ export class AdminView {
       return `<tr data-id="${u.id}">
         <td><div class="row">${u.avatar ? `<img class="avatar" src="${esc(u.avatar)}" alt="">` : `<div class="avatar initials">${esc((u.name || u.email || '?')[0].toUpperCase())}</div>`}
           <div style="min-width:0"><b>${esc(u.name || '')}</b>${self ? ' <span class="small muted">(you)</span>' : ''}<div class="small muted">${esc(u.email || '')}${u.google ? ' · Google' : ''}</div></div></div></td>
-        <td><span class="badge st-${u.status}">${u.status}</span></td>
-        <td><select class="role" ${self ? 'disabled' : ''}><option value="user" ${u.role === 'user' ? 'selected' : ''}>User</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>
-        <td class="small muted">${u.clips} clips · ${mb(u.storage)}<br>${u.streamers} streamers · ${u.processing === 'server' ? `${icon('server')} server` : `${icon('monitor')} browser`}</td>
-        <td class="small muted">${u.lastLoginAt ? timeAgo(u.lastLoginAt) : 'never'}<br>joined ${new Date(u.createdAt).toLocaleDateString()}</td>
-        <td><div class="row" style="justify-content:flex-end;gap:6px">
+        <td data-label="Status"><span class="badge st-${u.status}">${u.status}</span></td>
+        <td data-label="Role"><select class="role" ${self ? 'disabled' : ''}><option value="user" ${u.role === 'user' ? 'selected' : ''}>User</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>
+        <td data-label="Usage" class="small muted"><div>${u.clips} clips · ${mb(u.storage)}<br>${u.streamers} streamers · ${u.processing === 'server' ? `${icon('server')} server` : `${icon('monitor')} browser`}</div></td>
+        <td data-label="Last sign-in" class="small muted"><div>${u.lastLoginAt ? timeAgo(u.lastLoginAt) : 'never'}<br>joined ${new Date(u.createdAt).toLocaleDateString()}</div></td>
+        <td class="actions"><div class="row" style="justify-content:flex-end;gap:6px">
           ${u.status === 'pending' ? `<button class="btn sm primary approve">${icon('check')}Approve</button>` : ''}
           ${u.status === 'active' && !self ? `<button class="btn sm disable">${icon('ban')}Disable</button>` : ''}
           ${u.status === 'disabled' ? `<button class="btn sm enable">${icon('check-circle')}Enable</button>` : ''}

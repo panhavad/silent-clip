@@ -32,7 +32,10 @@ $('.logout').onclick = async () => { await api('/api/auth/logout', { method: 'PO
 // ---------- tabs ----------
 const TABS = ['live', 'streamers', 'clips', 'schedule', 'settings', ...(me.role === 'admin' ? ['admin'] : [])];
 function showTab(name) {
-  $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  $$('.tab').forEach((t) => {
+    t.classList.toggle('active', t.dataset.tab === name);
+    if (t.dataset.tab === name) t.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
   $$('main > section').forEach((s) => s.classList.toggle('hidden', s.dataset.view !== name));
   if (name === 'clips') library.load();
   if (name === 'streamers') renderStreamers();
