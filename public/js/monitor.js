@@ -37,6 +37,12 @@ function drawSpark(canvas, rates = [], heat = 0) {
 
 export function mountMonitors(container, manager, { showPlayers = false, onPopout } = {}) {
   const cards = new Map();
+  // Loading skeletons are dropped once the manager reports real state (even if no streamer is being watched).
+  const clearPlaceholders = () => {
+    container.querySelectorAll(':scope > .sk-card').forEach((el) => el.remove());
+    container.removeAttribute('aria-busy');
+  };
+  manager.addEventListener('ready', clearPlaceholders);
 
   function card(login) {
     let el = cards.get(login);
@@ -117,6 +123,7 @@ export function mountMonitors(container, manager, { showPlayers = false, onPopou
   }
 
   manager.addEventListener('update', (e) => {
+    clearPlaceholders();
     if (e.detail.login) update(e.detail.login);
     else {
       for (const login of [...cards.keys()]) if (!manager.state.has(login)) update(login);

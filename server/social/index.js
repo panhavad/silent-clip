@@ -7,7 +7,7 @@ import {
   openSession, getSession, closeUserSessions, deleteProfile, profileBusy, liveSessions,
   browserAvailable, browserExecutable, canShowWindow,
 } from './browser.js';
-import { LoggedOutError, pause } from './human.js';
+import { LoggedOutError, pause, sleep } from './human.js';
 import { youtube } from './youtube.js';
 import { tiktok } from './tiktok.js';
 import { instagram } from './instagram.js';
@@ -29,7 +29,7 @@ export function getAccount(userId, platform) {
   const meta = json(r.meta, {});
   return {
     platform, username: r.username, displayName: r.display_name, avatar: r.avatar,
-    loggedIn: meta.loggedIn !== false, checkedAt: meta.checkedAt || r.updated_at, demo: Boolean(meta.demo), since: r.created_at,
+    loggedIn: meta.loggedIn !== false, checkedAt: meta.checkedAt || r.updated_at, refreshedAt: meta.refreshedAt || null, demo: Boolean(meta.demo), since: r.created_at,
   };
 }
 
@@ -37,7 +37,7 @@ export const connectedPlatforms = (userId) => Object.keys(DRIVERS).filter((p) =>
 
 export function saveAccount(userId, platform, info = {}) {
   const now = Date.now();
-  const meta = JSON.stringify({ loggedIn: true, checkedAt: now, method: 'browser', demo: Boolean(info.demo) });
+  const meta = JSON.stringify({ loggedIn: true, checkedAt: now, refreshedAt: now, method: 'browser', demo: Boolean(info.demo) });
   db.prepare(`INSERT INTO accounts (user_id, platform, username, display_name, avatar, meta, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(user_id, platform) DO UPDATE SET username = COALESCE(excluded.username, username),
@@ -47,9 +47,13 @@ export function saveAccount(userId, platform, info = {}) {
 }
 
 export function markLoggedOut(userId, platform) {
+  touchAccount(userId, platform, { loggedIn: false, checkedAt: Date.now() });
+}
+
+function touchAccount(userId, platform, patch) {
   const r = db.prepare('SELECT meta FROM accounts WHERE user_id = ? AND platform = ?').get(userId, platform);
   if (!r) return;
-  const meta = { ...json(r.meta, {}), loggedIn: false, checkedAt: Date.now() };
+  const meta = { ...json(r.meta, {}), ...patch };
   db.prepare('UPDATE accounts SET meta = ?, updated_at = ? WHERE user_id = ? AND platform = ?').run(JSON.stringify(meta), Date.now(), userId, platform);
 }
 
@@ -83,19 +87,72 @@ async function confirmLogin(userId, session) {
   return { loggedIn: true, ...(who || {}) };
 }
 
-/** Check the saved session without showing anything (used by the "Check" button). */
+/**
+ * Open the saved login in the background, visit the platform the way an open tab would (so the site
+ * refreshes / rotates its own login cookies), save them and record whether it is really still signed in.
+ */
+export async function refreshSession(userId, platform) {
+  const d = DRIVERS[platform];
+  const s = await openSession({ userId, platform, kind: 'check', headed: false });
+  try {
+    s.step = 'Keeping the login fresh';
+    let { loggedIn } = await readSession(s);
+    if (loggedIn && d.homeUrl) {
+      await s.page.goto(d.homeUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await s.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+      await sleep(KEEPALIVE_DWELL_MS);
+      loggedIn = !d.loggedOutUrl?.test(s.page.url()) && (await readSession(s)).loggedIn;
+    }
+    if (!loggedIn) markLoggedOut(userId, platform);
+    else if (!getAccount(userId, platform)) await confirmLogin(userId, s);
+    else touchAccount(userId, platform, { loggedIn: true, checkedAt: Date.now(), refreshedAt: Date.now() });
+    return loggedIn;
+  } finally { await s.close(); }
+}
+
+/** Check the saved session (the "Check" button): really loads the platform, and refreshes the login. */
 export async function checkLogin(user, platform) {
   if (dryRun() && getAccount(user.id, platform)?.demo) return getAccount(user.id, platform);
   if (profileBusy(user.id, platform)) return getAccount(user.id, platform);
-  const s = await openSession({ userId: user.id, platform, kind: 'check', headed: false });
-  try {
-    const { loggedIn } = await readSession(s);
-    if (loggedIn) {
-      if (!getAccount(user.id, platform)) await confirmLogin(user.id, s);
-      else saveAccount(user.id, platform, {});
-    } else markLoggedOut(user.id, platform);
-  } finally { await s.close(); }
+  await refreshSession(user.id, platform);
   return getAccount(user.id, platform) || { platform, loggedIn: false };
+}
+
+// ---------- keep logins alive ----------
+// Sites sign out logins that sit unused (Google also rotates its login cookies while a tab is open).
+// Every few hours each saved login is opened in the background so it never goes stale.
+export const KEEPALIVE_HOURS = Number(process.env.SOCIAL_KEEPALIVE_HOURS ?? 6);
+const KEEPALIVE_DWELL_MS = Number(process.env.SOCIAL_KEEPALIVE_DWELL_SEC ?? 20) * 1000;
+
+export async function refreshDueSessions({ force = false } = {}) {
+  if (!browserAvailable()) return [];
+  const due = db.prepare('SELECT user_id, platform, meta FROM accounts').all().filter((r) => {
+    const m = json(r.meta, {});
+    return DRIVERS[r.platform] && m.loggedIn !== false && !m.demo && (force || Date.now() - (m.refreshedAt || 0) > KEEPALIVE_HOURS * 3600000);
+  });
+  const results = [];
+  // One at a time, skipping profiles that are posting or logging in right now.
+  for (const r of due) {
+    if (profileBusy(r.user_id, r.platform)) continue;
+    try {
+      results.push({ userId: r.user_id, platform: r.platform, loggedIn: await refreshSession(r.user_id, r.platform) });
+    } catch (e) {
+      if (!e.busy) console.error(`login refresh ${r.platform} (user ${r.user_id}) failed:`, e.message);
+    }
+  }
+  return results;
+}
+
+export function startSessionKeepAlive() {
+  if (!(KEEPALIVE_HOURS > 0)) return;
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try { await refreshDueSessions(); } finally { running = false; }
+  };
+  setTimeout(tick, 2 * 60000).unref();
+  setInterval(tick, 15 * 60000).unref();
 }
 
 // Cookie-Editor / EditThisCookie JSON export -> Playwright cookies.
@@ -134,6 +191,7 @@ export async function publishWithBrowser({ user, platform, file, clip, onStep, o
       page: session.page, file, clip, settings, step, account: getAccount(user.id, platform), final: () => { pressedPost = true; },
     });
     step('Posted');
+    touchAccount(user.id, platform, { loggedIn: true, checkedAt: Date.now(), refreshedAt: Date.now() });
     await pause(1500, 2500);
     return out;
   } catch (e) {
@@ -168,6 +226,7 @@ router.get('/api/accounts', (req, res) => {
   const live = liveSessions().filter((s) => s.userId === req.user.id);
   res.json({
     demo: dryRun(),
+    keepAliveHours: KEEPALIVE_HOURS > 0 ? KEEPALIVE_HOURS : null,
     browser: { available: browserAvailable(), path: browserExecutable() ? path.basename(browserExecutable()) : null, canShowWindow: canShowWindow() },
     accounts: Object.values(DRIVERS).map((d) => {
       const a = getAccount(req.user.id, d.id);

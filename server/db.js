@@ -109,6 +109,10 @@ if (!userCols.has('role')) db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT N
 // Existing accounts stay active; new sign-ups are inserted as 'pending' until an admin approves them.
 if (!userCols.has('status')) db.exec("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
 if (!userCols.has('last_login_at')) db.exec('ALTER TABLE users ADD COLUMN last_login_at INTEGER');
+// Bytes of clip storage an admin allows this user; NULL = unlimited. Over the limit, the oldest clips are replaced.
+if (!userCols.has('storage_limit')) db.exec('ALTER TABLE users ADD COLUMN storage_limit INTEGER');
+// Admin switch: may this account watch & clip on the server (processing = 'server')? 1 = allowed.
+if (!userCols.has('server_watch')) db.exec('ALTER TABLE users ADD COLUMN server_watch INTEGER NOT NULL DEFAULT 1');
 const postCols = new Set(db.prepare('PRAGMA table_info(posts)').all().map((c) => c.name));
 if (!postCols.has('step')) db.exec('ALTER TABLE posts ADD COLUMN step TEXT');
 if (!postCols.has('shot')) db.exec('ALTER TABLE posts ADD COLUMN shot INTEGER NOT NULL DEFAULT 0');
@@ -175,6 +179,7 @@ export function applySettings(user, body = {}) {
   next.reactionDelaySec = Math.min(15, Math.max(0, next.reactionDelaySec));
   next.cooldownSec = Math.min(3600, Math.max(10, next.cooldownSec));
   next.maxClipsPerHour = Math.min(60, Math.max(1, next.maxClipsPerHour));
+  if (!serverWatchAllowed(user)) { next.processing = 'browser'; next.serverRunning = false; }
   db.prepare('UPDATE users SET settings = ? WHERE id = ?').run(JSON.stringify(next), user.id);
   user.settings = JSON.stringify(next);
   for (const fn of settingsListeners) fn(user.id, next);
@@ -184,8 +189,12 @@ export function applySettings(user, body = {}) {
 const settingsListeners = new Set();
 export const onSettingsChanged = (fn) => settingsListeners.add(fn);
 
+export const serverWatchAllowed = (user) => user?.server_watch !== 0;
+
 export function userSettings(user) {
   let s = {};
   try { s = JSON.parse(user.settings || '{}'); } catch { /* ignore */ }
-  return { ...DEFAULT_SETTINGS, ...s };
+  const out = { ...DEFAULT_SETTINGS, ...s };
+  if (!serverWatchAllowed(user)) { out.processing = 'browser'; out.serverRunning = false; }
+  return out;
 }

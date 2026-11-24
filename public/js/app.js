@@ -12,14 +12,16 @@ import { icon, hydrateIcons } from './icons.js';
 import { preloadRenderer } from './engine/render.js';
 import { thresholds } from './engine/analyzer.js';
 import { renderVersion, watchForUpdates } from './version.js';
+import { skeleton, showLoading } from './loader.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const SERVER_WATCH_OFF = 'Watching on the server is turned off for your account. Ask an administrator to enable it.';
 
 hydrateIcons();
-const [me, config] = await Promise.all([api('/api/me'), api('/api/config')]);
+const [me, config, initialStreamers] = await Promise.all([api('/api/me'), api('/api/config'), api('/api/streamers')]);
 let settings = me.settings;
-let streamers = await api('/api/streamers');
+let streamers = initialStreamers;
 let running = false;
 let mode = settings.mode;
 let processing = settings.processing || 'browser';
@@ -104,7 +106,11 @@ const schedule = new ScheduleView($('.schedule-root'), {
 // ---------- watchers: in this browser, or on the server ----------
 const browserManager = new WatcherManager({ settings, userId: me.id, label: 'dashboard' });
 const serverManager = new ServerManager();
-const onClip = ({ detail }) => { toast(`New clip from ${detail.login}: ${detail.clip.title}`, 'ok'); library.load(); };
+const onClip = ({ detail }) => {
+  toast(`New clip from ${detail.login}: ${detail.clip.title}`, 'ok');
+  if (detail.clip.overwritten) toast(`Storage limit reached: replaced your ${detail.clip.overwritten} oldest clip(s)`);
+  library.load();
+};
 for (const m of [browserManager, serverManager]) {
   mountMonitors($('.monitors'), m, { onPopout: (login) => openWindows([login]) });
   m.addEventListener('clip', onClip);
@@ -163,7 +169,7 @@ async function start() {
   if (!enabled().length) { toast('Add at least one streamer first', 'error'); showTab('streamers'); return; }
   if (processing === 'server') {
     try { await serverManager.start(); } catch (e) { toast(e.message, 'error'); return; }
-    $('.monitors').innerHTML = '';
+    showLoading($('.monitors'), skeleton.monitors(Math.min(enabled().length, 4)));
     running = true;
     settings.serverRunning = true;
     return refreshAutomation();
@@ -198,6 +204,7 @@ async function stop() {
 }
 
 function refreshAutomation() {
+  heartbeat();
   $('.toggle').innerHTML = running ? `${icon('stop')}Stop watching` : `${icon('play')}Start watching`;
   $('.toggle').classList.toggle('primary', !running);
   const where = processing === 'server' ? 'on the server' : `in ${mode} mode`;
@@ -212,6 +219,7 @@ function refreshAutomation() {
 
 async function switchProcessing(p) {
   if (p === processing) return;
+  if (p === 'server' && !me.serverWatch) { toast(SERVER_WATCH_OFF, 'error'); return; }
   const wasRunning = running;
   if (running) await stop();
   processing = p;
@@ -235,27 +243,41 @@ $('.notify').onclick = async () => {
 };
 
 // ---------- streamers ----------
-async function renderStreamers() {
-  const list = $('.streamer-list');
-  if (!streamers.length) { list.innerHTML = '<div class="empty">No streamers yet.</div>'; return; }
-  let live = {};
-  try { live = await getChannels(streamers.map((s) => s.login)); } catch { /* status optional */ }
-  list.innerHTML = streamers.map((s) => {
-    const c = live[s.login];
+let streamerSeq = 0;
+function streamerRows(live) {
+  return streamers.map((s) => {
+    const c = live?.[s.login];
+    const status = !live ? '<div class="sk sk-line sm" style="width:160px" title="Checking live status"></div>'
+      : c?.live ? `<span class="live-dot"></span>Live · ${esc(c.game)} · ${c.viewers.toLocaleString()} viewers` : c ? 'Offline' : 'Unknown channel';
     return `<div class="streamer-item" data-id="${s.id}">
-      <img class="avatar" src="${esc(c?.avatar || s.avatar || '')}" alt="">
-      <div style="min-width:0"><div><b>${esc(c?.displayName || s.displayName)}</b> <a class="small" href="${s.url}" target="_blank" rel="noopener">${esc(s.url)}</a></div>
-        <div class="small muted">${c?.live ? `<span class="live-dot"></span>Live · ${esc(c.game)} · ${c.viewers.toLocaleString()} viewers` : c ? 'Offline' : 'Unknown channel'}</div></div>
+      <img class="avatar" src="${esc(c?.avatar || s.avatar || '')}" alt="" loading="lazy" decoding="async">
+      <div style="min-width:0;flex:1"><div><b>${esc(c?.displayName || s.displayName)}</b> <a class="small" href="${s.url}" target="_blank" rel="noopener">${esc(s.url)}</a></div>
+        <div class="small muted">${status}</div></div>
       <span class="spacer"></span>
       <label class="row small"><input type="checkbox" class="en" ${s.enabled ? 'checked' : ''}> Auto-clip</label>
       <button class="btn sm danger rm">${icon('trash')}Remove</button>
     </div>`;
   }).join('');
-  $$('.streamer-item', list).forEach((row) => {
+}
+
+async function renderStreamers() {
+  const list = $('.streamer-list');
+  const seq = ++streamerSeq;
+  if (!streamers.length) { list.innerHTML = '<div class="empty">No streamers yet.</div>'; return; }
+  // Rows show right away; the live status from Twitch fills in when it arrives.
+  const bind = () => $$('.streamer-item', list).forEach((row) => {
     const s = streamers.find((x) => String(x.id) === row.dataset.id);
     $('.en', row).onchange = async (e) => { Object.assign(s, await api(`/api/streamers/${s.id}`, { method: 'PATCH', body: { enabled: e.target.checked } })); onStreamersChanged(); };
     $('.rm', row).onclick = async () => { await api(`/api/streamers/${s.id}`, { method: 'DELETE' }); streamers = streamers.filter((x) => x !== s); renderStreamers(); onStreamersChanged(); };
   });
+  const idle = showLoading(list, streamerRows(null));
+  bind();
+  let live = {};
+  try { live = await getChannels(streamers.map((s) => s.login)); } catch { /* status optional */ }
+  if (seq !== streamerSeq) return;
+  idle();
+  list.innerHTML = streamerRows(live);
+  bind();
 }
 
 function onStreamersChanged() {
@@ -263,6 +285,45 @@ function onStreamersChanged() {
   if (running && processing === 'browser' && mode === 'background') browserManager.start(enabled());
   refreshAutomation();
 }
+
+// ---------- report watching to the server; follow admin stop commands ----------
+function watchSnapshot() {
+  if (!running || processing !== 'browser') return [];
+  if (mode === 'foreground') {
+    return enabled().map((s) => {
+      const w = windowStatus.get(s.login);
+      return { login: s.login, displayName: s.displayName, status: w && Date.now() - w.seen < 10000 ? w.status : 'closed' };
+    });
+  }
+  return [...browserManager.state.values()].map((st) => ({
+    login: st.login, displayName: st.displayName, status: st.status,
+    live: Boolean(st.channel?.live), viewers: st.channel?.viewers || 0, game: st.channel?.game || '',
+  }));
+}
+
+function handleAdminCommand(c) {
+  if (c.type === 'stop' && running) {
+    stop();
+    toast('An administrator stopped your watching.', 'error');
+  }
+  if (c.type === 'disable') {
+    const s = streamers.find((x) => x.login === c.login);
+    if (!s?.enabled) return;
+    s.enabled = false;
+    channel.postMessage({ type: 'stop-streamer', login: s.login });
+    onStreamersChanged();
+    if (!$('[data-view="streamers"]').classList.contains('hidden')) renderStreamers();
+    toast(`An administrator stopped watching ${s.displayName}. Auto-clip is now off for this streamer.`, 'error');
+  }
+}
+
+async function heartbeat() {
+  try {
+    const { commands } = await api('/api/watch/heartbeat', { method: 'POST', body: { running, processing, mode, streamers: watchSnapshot() } });
+    (commands || []).forEach(handleAdminCommand);
+  } catch { /* offline / restarting */ }
+}
+setInterval(heartbeat, 10000);
 
 $('.add-streamer').onsubmit = async (e) => {
   e.preventDefault();
@@ -320,12 +381,43 @@ function reloadAfterRestore() {
 }
 
 // ---------- boot ----------
+function lockServerWatch() {
+  const b = $('.processing button[data-p=server]');
+  b.disabled = true;
+  b.title = SERVER_WATCH_OFF;
+  const opt = form.elements.processing.querySelector('option[value=server]');
+  opt.disabled = true;
+  opt.textContent = 'The server (turned off for your account by an administrator)';
+}
+if (!me.serverWatch) lockServerWatch();
+serverManager.addEventListener('stopped', () => {
+  if (!running || processing !== 'server') return;
+  running = false;
+  settings = { ...settings, serverRunning: false };
+  $('.monitors').innerHTML = '';
+  refreshAutomation();
+  toast('Watching on the server was stopped (by an administrator or from another device).', 'error');
+});
+serverManager.addEventListener('revoked', () => {
+  me.serverWatch = false;
+  settings = { ...settings, processing: 'browser', serverRunning: false };
+  processing = 'browser';
+  running = false;
+  lockServerWatch();
+  if (form.elements.processing) form.elements.processing.value = 'browser';
+  $('.monitors').innerHTML = '';
+  setProcessingUi();
+  refreshAutomation();
+  toast(`${SERVER_WATCH_OFF} Switched back to watching in this browser.`, 'error');
+});
+$('.monitors').innerHTML = '';
+$('.monitors').removeAttribute('aria-busy');
 setProcessingUi();
 refreshAutomation();
 if (processing === 'server') {
   if (settings.serverRunning) {
     running = true;
-    $('.monitors').innerHTML = '';
+    showLoading($('.monitors'), skeleton.monitors(Math.max(1, Math.min(enabled().length, 4))));
     serverManager.attach();
     refreshAutomation();
   }

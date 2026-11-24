@@ -29,6 +29,7 @@ export class ServerManager extends EventTarget {
 
   attach() {
     this.running = true;
+    this.announced = false;
     clearTimeout(this.timer);
     this.poll();
   }
@@ -54,6 +55,9 @@ export class ServerManager extends EventTarget {
     if (!this.running) return;
     try {
       const data = await api('/api/server-watch');
+      if (data.allowed === false) { this.detach(); this.#emit('revoked', {}); return; }
+      // Watching was switched off elsewhere (e.g. by an administrator).
+      if (data.running === false) { this.detach(); this.#emit('stopped', {}); return; }
       this.available = data.available;
       this.queue = data.queue;
       const first = !this.initialized;
@@ -78,6 +82,7 @@ export class ServerManager extends EventTarget {
         if (w.stats) this.#emit('stats', { login: w.login, stats: w.stats });
       }
       for (const login of [...this.state.keys()]) if (!seen.has(login)) { this.state.delete(login); this.#emit('update', { login }); }
+      if (!this.announced) { this.announced = true; this.#emit('ready', {}); }
     } catch { /* transient */ }
     this.timer = setTimeout(() => this.poll(), 2000);
   }

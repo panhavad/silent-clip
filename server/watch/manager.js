@@ -5,7 +5,7 @@ import express from 'express';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { db, DATA_DIR, userSettings, applySettings, onSettingsChanged } from '../db.js';
+import { db, DATA_DIR, userSettings, applySettings, onSettingsChanged, serverWatchAllowed } from '../db.js';
 import { fetchMaster } from '../twitch.js';
 import { getChannel } from '../../public/js/engine/twitch.js';
 import { SegmentBuffer } from '../../public/js/engine/hls.js';
@@ -206,6 +206,7 @@ class ServerWatcher {
         { video: out.video, thumb: out.thumb, source: s.keepSource ? input : null });
       Object.assign(state, { stage: 'done', progress: 1, clipId: row.id, title: row.title });
       this.note(`Saved clip "${row.title}"`);
+      if (row.overwritten.length) this.note(`Storage limit reached: replaced ${row.overwritten.length} oldest clip(s)`);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -262,18 +263,22 @@ export function startServerWatchers() {
 }
 
 // ---------- API ----------
+export const SERVER_WATCH_OFF = 'Watching on the server is turned off for your account. Ask an administrator to enable it.';
 export const router = express.Router();
 
 router.get('/api/server-watch', async (req, res) => {
   const s = userSettings(req.user);
   res.json({
-    processing: s.processing, running: Boolean(s.serverRunning), available: await ffmpegAvailable(),
+    processing: s.processing, running: Boolean(s.serverRunning), allowed: serverWatchAllowed(req.user), available: await ffmpegAvailable(),
     queue: queued, maxStreamers: MAX_PER_USER, host: os.hostname(),
     watchers: [...watchers.values()].filter((w) => w.userId === req.user.id).map((w) => w.snapshot()),
   });
 });
 
 router.put('/api/server-watch', async (req, res) => {
+  if ((req.body.running || req.body.processing === 'server') && !serverWatchAllowed(req.user)) {
+    return res.status(403).json({ error: SERVER_WATCH_OFF });
+  }
   if (req.body.running && !(await ffmpegAvailable())) return res.status(503).json({ error: 'Server processing is unavailable: ffmpeg is not installed on the server' });
   const patch = {};
   if (req.body.processing !== undefined) patch.processing = req.body.processing;
@@ -288,3 +293,63 @@ router.post('/api/server-watch/:login/clip', (req, res) => {
   if (!w.clipNow()) return res.status(409).json({ error: 'Not watching a live stream yet' });
   res.json({ ok: true });
 });
+
+// ---------- browser watching (heartbeats from open dashboards) + admin stop commands ----------
+// Watching in the browser happens in the user's tab, so the dashboard reports what it watches every few
+// seconds and picks up admin commands ({ type: 'stop' } / { type: 'disable', login }) from the reply.
+const activity = new Map(); // userId -> { at, running, mode, since, streamers, commands }
+export const HEARTBEAT_TTL = 45000;
+const clean = (v, n) => String(v ?? '').slice(0, n);
+
+/** Queue a command for the user's open dashboard. Returns false when no dashboard is open. */
+export function queueCommand(userId, cmd) {
+  const a = activity.get(userId);
+  if (!a || Date.now() - a.at > HEARTBEAT_TTL) return false;
+  a.commands.push(cmd);
+  return true;
+}
+
+router.post('/api/watch/heartbeat', (req, res) => {
+  const prev = activity.get(req.user.id);
+  const delivered = prev?.commands || [];
+  // The dashboard acts on commands as soon as it gets them, so don't show what it is about to stop.
+  const stopAll = delivered.some((c) => c.type === 'stop');
+  const dropped = new Set(delivered.filter((c) => c.type === 'disable').map((c) => c.login));
+  const running = Boolean(req.body.running) && req.body.processing !== 'server' && !stopAll;
+  const streamers = running && Array.isArray(req.body.streamers)
+    ? req.body.streamers.slice(0, 50).map((s) => ({
+      login: clean(s.login, 25).toLowerCase(), displayName: clean(s.displayName || s.login, 40), status: clean(s.status, 20),
+      live: Boolean(s.live), viewers: Number(s.viewers) || 0, game: clean(s.game, 80),
+    })).filter((s) => !dropped.has(s.login))
+    : [];
+  activity.set(req.user.id, {
+    at: Date.now(), running, mode: req.body.mode === 'foreground' ? 'foreground' : 'background',
+    since: running ? (prev?.running ? prev.since : Date.now()) : null, streamers, commands: [],
+  });
+  res.json({ commands: delivered });
+});
+
+/** Everyone watching right now: server watchers plus browsers that reported recently. */
+export function watchingOverview() {
+  const now = Date.now();
+  const byUser = new Map();
+  const entry = (id) => { if (!byUser.has(id)) byUser.set(id, { userId: id, server: null, browser: null }); return byUser.get(id); };
+  for (const w of watchers.values()) {
+    (entry(w.userId).server ||= { streamers: [] }).streamers.push({
+      login: w.login, displayName: w.displayName || w.login, status: w.status,
+      live: Boolean(w.channel?.live), viewers: w.channel?.viewers || 0, game: w.channel?.game || '',
+    });
+  }
+  for (const [id, a] of activity) {
+    if (now - a.at > HEARTBEAT_TTL) { activity.delete(id); continue; }
+    if (a.running && a.streamers.length) {
+      const stopAll = a.commands.some((c) => c.type === 'stop');
+      const disabled = new Set(a.commands.filter((c) => c.type === 'disable').map((c) => c.login));
+      entry(id).browser = {
+        mode: a.mode, seenAt: a.at, since: a.since, stopping: stopAll,
+        streamers: a.streamers.map((s) => ({ ...s, stopping: stopAll || disabled.has(s.login) })),
+      };
+    }
+  }
+  return [...byUser.values()];
+}

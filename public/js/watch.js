@@ -42,10 +42,16 @@ if (serverMode) {
       channel.postMessage({ type: 'win-status', login, status: st.status, heat: heat.get(login) ?? null });
     }
   }, 3000);
+  let active = list;
   channel.onmessage = ({ data }) => {
     if (data.type === 'settings') manager.updateSettings(data.settings);
     if (data.type === 'close-all') window.close();
+    // An admin stopped one stream: drop it here, and close the window if nothing is left.
+    if (data.type === 'stop-streamer' && active.some((s) => s.login === data.login)) {
+      active = active.filter((s) => s.login !== data.login);
+      if (active.length) manager.start(active); else window.close();
+    }
   };
   preloadRenderer().catch((e) => toast(`Renderer failed to load: ${e.message}`, 'error'));
-  manager.start(list);
+  manager.start(active);
 }

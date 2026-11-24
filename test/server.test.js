@@ -121,3 +121,124 @@ test('auth, streamers and clip lifecycle with new/downloaded/posted tracking', a
   assert.equal((await call('/api/me')).data.settings.sensitivity, 8);
   assert.deepEqual((await call('/api/streamers')).data.map((s) => [s.login, s.enabled]), [['xqc', true], ['jynxzi', false]]);
 });
+
+test('admin storage limit: oldest clips are replaced, scheduled ones are kept', async () => {
+  const { db } = await import('../server/db.js');
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  const user = (await call('/api/admin/users', { method: 'POST', body: { email: 'quota@x.co', password: 'password123' } })).data.user;
+  assert.equal(user.storageLimit, null);
+  assert.equal((await call(`/api/admin/users/${user.id}`, { method: 'PATCH', body: { storageLimit: 1000 } })).status, 400);
+  assert.equal((await call(`/api/admin/users/${user.id}`, { method: 'PATCH', body: { storageLimit: 1.5e6 } })).data.storageLimit, 1.5e6);
+
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'quota@x.co', password: 'password123' } });
+  const upload = async (title) => {
+    const form = new FormData();
+    form.append('meta', JSON.stringify({ streamer: 'xqc', title }));
+    form.append('video', new Blob([new Uint8Array(600_000)], { type: 'video/mp4' }), 'clip.mp4');
+    return (await call('/api/clips', { method: 'POST', form })).data;
+  };
+  const a = await upload('A');
+  assert.equal((await upload('B')).overwritten, 0);
+  // A is waiting to be posted, so it must survive even though it is the oldest.
+  db.prepare("INSERT INTO posts (id, user_id, clip_id, platform, scheduled_at, status, created_at) VALUES ('p1', ?, ?, 'youtube', ?, 'scheduled', ?)")
+    .run(user.id, a.id, Date.now() + 3600000, Date.now());
+  assert.equal((await upload('C')).overwritten, 1);
+  assert.equal((await upload('D')).overwritten, 1);
+  const list = (await call('/api/clips')).data;
+  assert.deepEqual(list.clips.map((c) => c.title), ['D', 'A']);
+  assert.equal(list.storage.limit, 1.5e6);
+  assert.ok(list.storage.used <= 1.5e6);
+
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  assert.equal((await call(`/api/admin/users/${user.id}`, { method: 'PATCH', body: { storageLimit: null } })).data.storageLimit, null);
+});
+
+test('admin can turn server-side watching off and on per user', async () => {
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  const user = (await call('/api/admin/users', { method: 'POST', body: { email: 'watcher@x.co', password: 'password123' } })).data.user;
+  assert.equal(user.serverWatch, true, 'allowed by default');
+
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'watcher@x.co', password: 'password123' } });
+  assert.equal((await call('/api/server-watch', { method: 'PUT', body: { processing: 'server' } })).data.processing, 'server');
+  const userCookie = cookie;
+
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  const off = (await call(`/api/admin/users/${user.id}`, { method: 'PATCH', body: { serverWatch: false } })).data;
+  assert.equal(off.serverWatch, false);
+  assert.equal(off.processing, 'browser', 'moved back to browser processing');
+  const adminCookie = cookie;
+
+  cookie = userCookie;
+  const me = (await call('/api/me')).data;
+  assert.equal(me.serverWatch, false);
+  assert.equal(me.settings.processing, 'browser');
+  assert.equal((await call('/api/server-watch', { method: 'PUT', body: { running: true } })).status, 403);
+  assert.equal((await call('/api/server-watch', { method: 'PUT', body: { processing: 'server' } })).status, 403);
+  assert.equal((await call('/api/settings', { method: 'PUT', body: { processing: 'server' } })).data.processing, 'browser');
+  assert.equal((await call('/api/server-watch')).data.allowed, false);
+
+  cookie = adminCookie;
+  assert.equal((await call(`/api/admin/users/${user.id}`, { method: 'PATCH', body: { serverWatch: true } })).data.serverWatch, true);
+  cookie = userCookie;
+  assert.equal((await call('/api/server-watch', { method: 'PUT', body: { processing: 'server' } })).data.processing, 'server');
+});
+
+test('admin sees who is watching and can stop a user or a single stream', async () => {
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  const adminCookie = cookie;
+  const user = (await call('/api/admin/users', { method: 'POST', body: { email: 'viewer@x.co', password: 'password123' } })).data.user;
+
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'viewer@x.co', password: 'password123' } });
+  const userCookie = cookie;
+  await call('/api/streamers', { method: 'POST', body: { url: 'twitch.tv/xqc' } });
+  const beat = (running = true) => call('/api/watch/heartbeat', { method: 'POST', body: { running, processing: 'browser', mode: 'background', streamers: [{ login: 'xqc', status: 'watching', live: true, viewers: 50000 }] } });
+  assert.deepEqual((await beat()).data.commands, []);
+  assert.equal((await call('/api/admin/watching')).status, 403, 'admins only');
+
+  cookie = adminCookie;
+  let watching = (await call('/api/admin/watching')).data;
+  const row = watching.find((w) => w.email === 'viewer@x.co');
+  assert.deepEqual(row.browser.streamers.map((s) => [s.login, s.live]), [['xqc', true]]);
+  // One stream: auto-clip goes off and the open dashboard is told to drop it.
+  assert.equal((await call(`/api/admin/watching/${user.id}/streamers/xqc/stop`, { method: 'POST' })).data.browser, true);
+  assert.equal((await call(`/api/admin/watching/${user.id}/streamers/nobody/stop`, { method: 'POST' })).status, 404);
+  // Everything: the dashboard gets a stop command on its next heartbeat.
+  assert.equal((await call(`/api/admin/watching/${user.id}/stop`, { method: 'POST' })).data.browser, true);
+
+  cookie = userCookie;
+  assert.equal((await call('/api/streamers')).data[0].enabled, false);
+  assert.deepEqual((await beat()).data.commands, [{ type: 'disable', login: 'xqc' }, { type: 'stop' }]);
+  cookie = adminCookie;
+  // The dashboard is stopping as soon as it has the command, even though this heartbeat still said "running".
+  assert.equal((await call('/api/admin/watching')).data.some((w) => w.email === 'viewer@x.co'), false);
+  cookie = userCookie;
+  assert.deepEqual((await beat(false)).data.commands, [], 'commands are delivered once');
+
+  cookie = adminCookie;
+  watching = (await call('/api/admin/watching')).data;
+  assert.equal(watching.some((w) => w.email === 'viewer@x.co'), false);
+});
+
+test('sign-in sessions slide forward instead of expiring', async () => {
+  const { db } = await import('../server/db.js');
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  const id = cookie.split('=')[1];
+  // Pretend the session is about to run out; the next visit extends it to the full lifetime again.
+  db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(Date.now() + 60000, id);
+  const res = await fetch(`${base}/api/me`, { headers: { cookie } });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('set-cookie') || '', /Max-Age=34560000/);
+  const left = db.prepare('SELECT expires_at FROM sessions WHERE id = ?').get(id).expires_at - Date.now();
+  assert.ok(left > 399 * 86400000, 'renewed to ~400 days');
+  // Renewed at most once a day: an immediate second visit doesn't rewrite the cookie.
+  assert.equal((await fetch(`${base}/api/me`, { headers: { cookie } })).headers.get('set-cookie'), null);
+});

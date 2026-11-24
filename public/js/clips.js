@@ -3,6 +3,7 @@ import { shareClip, postText, UPLOAD_PAGES } from './publish.js';
 import { getAccounts, accountFor, PLATFORM_META, loginTo } from './accounts.js';
 import { openBrowserViewer } from './browser-view.js';
 import { icon } from './icons.js';
+import { skeleton, showLoading, lazyImages } from './loader.js';
 import { renderClip } from './engine/render.js';
 import { autoSubtitles, phrasesToText, textToPhrases } from './engine/transcribe.js';
 import { getChannel } from './engine/twitch.js';
@@ -17,9 +18,12 @@ export class ClipLibrary {
     this.onCounts = onCounts;
     this.filter = 'new';
     this.clips = [];
+    this.loadSeq = 0;
+    this.shownFilter = null;
     root.innerHTML = `
       <div class="section-head">
-        <div><h2 style="margin:0">Clip library</h2><div class="muted small">Rendered 9:16 clips saved on the server. New = not downloaded or posted yet.</div></div>
+        <div><h2 style="margin:0">Clip library</h2><div class="muted small">Rendered 9:16 clips saved on the server. New = not downloaded or posted yet.</div>
+          <div class="small muted storage-note hidden"></div></div>
         <span class="spacer"></span>
         <div class="seg filters">
           <button data-f="new">New <span class="c-new"></span></button>
@@ -37,19 +41,35 @@ export class ClipLibrary {
   }
 
   async load() {
-    const { clips, counts } = await api(`/api/clips?filter=${this.filter}`);
+    const filter = this.filter;
+    const seq = ++this.loadSeq;
+    const grid = this.root.querySelector('.clip-grid');
+    this.root.querySelectorAll('.filters button').forEach((b) => b.classList.toggle('active', b.dataset.f === filter));
+    // Skeletons only when the grid would otherwise show stale or no content; background refreshes swap in place.
+    const fresh = filter !== this.shownFilter;
+    const idle = fresh ? showLoading(grid, skeleton.clips()) : () => {};
+    let data;
+    try {
+      data = await api(`/api/clips?filter=${filter}`);
+    } catch (e) {
+      if (fresh && seq === this.loadSeq) { idle(); grid.innerHTML = `<div class="empty" style="grid-column:1/-1">Couldn't load clips: ${esc(e.message)}</div>`; }
+      throw e;
+    }
+    if (seq !== this.loadSeq) return;
+    idle();
+    this.shownFilter = filter;
+    const { clips, counts, storage } = data;
     this.clips = clips;
-    this.root.querySelectorAll('.filters button').forEach((b) => b.classList.toggle('active', b.dataset.f === this.filter));
+    this.renderStorage(storage);
     for (const k of Object.keys(counts)) this.root.querySelector(`.c-${k}`).textContent = `(${counts[k]})`;
     this.onCounts(counts);
-    const grid = this.root.querySelector('.clip-grid');
     if (!clips.length) {
       grid.innerHTML = `<div class="empty" style="grid-column:1/-1">${this.filter === 'new' ? 'No new clips yet — start watching and viral moments will appear here automatically.' : 'No clips in this view.'}</div>`;
       return;
     }
     grid.innerHTML = clips.map((c) => `
       <div class="clip-card" data-id="${c.id}">
-        <div class="thumb" style="background-image:url('${c.thumbUrl || ''}')">
+        <div class="thumb lazy-bg" data-bg="${esc(c.thumbUrl || '')}">
           <div class="flags">
             ${c.isNew ? '<span class="badge new">New</span>' : ''}
             ${c.viral.subtitles?.length ? '<span class="badge" title="Has spoken subtitles">CC</span>' : ''}
@@ -64,6 +84,7 @@ export class ClipLibrary {
           <div class="muted small">${esc(c.streamer)} · ${timeAgo(c.createdAt)}</div>
         </div>
       </div>`).join('');
+    lazyImages(grid);
     grid.querySelectorAll('.clip-card').forEach((card) => {
       const clip = clips.find((c) => c.id === card.dataset.id);
       card.onclick = () => this.open(clip);
@@ -75,6 +96,17 @@ export class ClipLibrary {
       };
       card.onmouseleave = () => thumb.querySelector('video')?.remove();
     });
+  }
+
+  // Only shown when an admin has set a storage limit for this account.
+  renderStorage(storage) {
+    const el = this.root.querySelector('.storage-note');
+    el.classList.toggle('hidden', !storage?.limit);
+    if (!storage?.limit) return;
+    const size = (n) => (n >= 1e9 ? `${+(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`);
+    const pct = Math.min(100, (storage.used / storage.limit) * 100);
+    el.innerHTML = `<div class="quota-bar ${pct >= 100 ? 'full' : pct >= 80 ? 'high' : ''}"><div style="width:${pct}%"></div></div>
+      <span>${size(storage.used)} of ${size(storage.limit)} used${pct >= 80 ? ' · when full, your oldest clips are replaced by new ones' : ''}</span>`;
   }
 
   async mark(clip, body) {
@@ -267,10 +299,13 @@ export class ClipLibrary {
     let pollTimer = null;
     const publishPanel = async (platform) => {
       clearTimeout(pollTimer);
-      const accounts = await getAccounts();
+      panel.classList.remove('hidden');
+      const idle = showLoading(panel, `<div class="post-list">${skeleton.posts(2)}</div>`);
+      const accounts = await getAccounts()
+        .catch((e) => { panel.innerHTML = `<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; throw e; })
+        .finally(idle);
       const acc = accountFor(accounts, platform);
       const label = PLATFORM_META[platform].label;
-      panel.classList.remove('hidden');
       if (!acc?.connected) {
         panel.innerHTML = `<h3>${label}</h3>
           <p class="small muted" style="margin:6px 0 10px">${acc?.known ? `Your ${label} session has expired.` : `Log in to ${label} once.`} SlientClip then posts for you in a real browser: instantly, on a schedule, or automatically.</p>
@@ -294,11 +329,12 @@ export class ClipLibrary {
         <div class="small muted" style="margin-top:6px">A browser on the server posts the title + hashtags above, like a person would. <a href="#" class="manual">Post manually instead</a></div>`;
       panel.querySelector('.manual').onclick = (e) => { e.preventDefault(); assisted(platform); };
       const list = panel.querySelector('.post-list');
+      const listIdle = showLoading(list, skeleton.posts());
       const watched = new Set();
       let autoWatch = false;
       const watch = (p) => openBrowserViewer({ sessionId: p.sessionId, mode: 'watch', title: `Posting to ${label}` });
       const refresh = async () => {
-        const posts = (await api(`/api/posts?clipId=${clip.id}`)).filter((p) => p.platform === platform && p.status !== 'canceled');
+        const posts = (await api(`/api/posts?clipId=${clip.id}`).catch((e) => { if (list.hasAttribute('aria-busy')) list.innerHTML = ''; throw e; }).finally(listIdle)).filter((p) => p.platform === platform && p.status !== 'canceled');
         list.innerHTML = posts.map((p) => `<div class="item"><b>${STATUS[p.status]}</b>
           <span class="muted">${p.status === 'publishing' && p.step ? esc(p.step) : new Date(p.publishedAt || p.scheduledAt).toLocaleString()}${p.source === 'auto' ? ' · auto' : ''}</span>
           ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">open${icon('external')}</a>` : ''}

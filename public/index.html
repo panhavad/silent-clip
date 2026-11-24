@@ -29,7 +29,7 @@
         <div class="automation">
           <div>
             <h2>Automation</h2>
-            <div class="muted small auto-status">Stopped</div>
+            <div class="muted small auto-status"><div class="sk sk-line sm" style="width:200px;margin-top:6px"></div></div>
           </div>
           <span class="spacer"></span>
           <div class="seg processing" title="Where watching, chat analysis and clipping run">
@@ -50,7 +50,10 @@
         <div class="muted small mode-help" style="margin-top:10px"></div>
         <div class="notice popup-notice hidden" style="margin-top:10px">Your browser blocked some windows. Allow pop-ups for this site, or use the "Watch in window" buttons below.</div>
       </div>
-      <div class="monitors"></div>
+      <div class="monitors" aria-busy="true">
+        <div class="monitor sk-card"><div class="head"><div class="sk avatar"></div><div class="sk-lines"><div class="sk sk-line" style="width:45%"></div><div class="sk sk-line" style="width:30%"></div></div></div>
+          <div class="body"><div class="sk sk-block"></div><div class="sk sk-line" style="width:100%"></div><div class="sk sk-line" style="width:60%"></div></div></div>
+      </div>
       <div class="empty no-streamers hidden">Add Twitch streamers in the <b>Streamers</b> tab to start auto-clipping.</div>
     </section>
 

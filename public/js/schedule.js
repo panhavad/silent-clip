@@ -2,6 +2,7 @@ import { api, esc, toast } from './api.js';
 import { getAccounts, accountFor, PLATFORM_META } from './accounts.js';
 import { openBrowserViewer } from './browser-view.js';
 import { icon } from './icons.js';
+import { skeleton, showLoading, lazyImages } from './loader.js';
 
 const DAY = 86400000;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -62,7 +63,19 @@ export class ScheduleView {
   }
 
   async load() {
-    [this.settings, this.accounts] = await Promise.all([api('/api/autopublish'), getAccounts(true)]);
+    const $ = (sel) => this.root.querySelector(sel);
+    let idle = () => {};
+    if (!this.settings) {
+      const a = showLoading($('.ap-platforms'), skeleton.apRows());
+      const b = this.showCalendarSkeleton();
+      idle = () => { a(); b(); };
+    }
+    try {
+      [this.settings, this.accounts] = await Promise.all([api('/api/autopublish'), getAccounts(true)]);
+    } catch (e) {
+      if (!this.settings) { $('.ap-platforms').innerHTML = ''; $('.calendar').innerHTML = `<div class="empty" style="grid-column:1/-1">Couldn't load the schedule: ${esc(e.message)}</div>`; }
+      throw e;
+    } finally { idle(); }
     if (this.settings.timezone !== this.tz) {
       // Keep the schedule in the user's own time zone.
       this.settings = await api('/api/autopublish', { method: 'PUT', body: { timezone: this.tz } });
@@ -140,6 +153,13 @@ export class ScheduleView {
     return out;
   }
 
+  showCalendarSkeleton() {
+    const cal = this.root.querySelector('.calendar');
+    const month = this.view === 'month';
+    cal.className = `calendar ${this.view}`;
+    return showLoading(cal, (month ? DOW.map((x) => `<div class="cal-dow">${x}</div>`).join('') : '') + skeleton.calendar(month ? 42 : 7));
+  }
+
   async renderCalendar() {
     const $ = (sel) => this.root.querySelector(sel);
     this.root.querySelectorAll('.cal-mode button').forEach((b) => b.classList.toggle('active', b.dataset.v === this.view));
@@ -155,7 +175,22 @@ export class ScheduleView {
       $('.cal-title').textContent = first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
     }
     const to = from + days * DAY + DAY; // a little slack for DST
-    this.posts = await api(`/api/posts?from=${from}&to=${to}`);
+    // Skeleton only when switching to another week/month; periodic refreshes of the same range swap in place.
+    const key = `${this.view}:${from}`;
+    const seq = (this.calSeq = (this.calSeq || 0) + 1);
+    const fresh = key !== this.shownKey;
+    const idle = fresh ? this.showCalendarSkeleton() : () => {};
+    let posts;
+    try {
+      posts = await api(`/api/posts?from=${from}&to=${to}`);
+    } catch (e) {
+      if (fresh && seq === this.calSeq) { idle(); $('.calendar').innerHTML = `<div class="empty" style="grid-column:1/-1">Couldn't load the schedule: ${esc(e.message)}</div>`; }
+      throw e;
+    }
+    if (seq !== this.calSeq) return;
+    idle();
+    this.shownKey = key;
+    this.posts = posts;
     const byDay = new Map();
     for (const p of this.posts) {
       const k = startOfDay(p.publishedAt || p.scheduledAt);
@@ -189,6 +224,7 @@ export class ScheduleView {
       ].sort((a, b) => a.ts - b.ts);
       return `<div class="cal-day ${d === today ? 'is-today' : ''}" data-day="${d}">${head}${items.map((x) => x.html).join('') || '<div class="muted small" style="padding:6px">—</div>'}</div>`;
     }).join('');
+    lazyImages(cal);
 
     cal.querySelectorAll('.post-card').forEach((el) => {
       const post = this.posts.find((p) => p.id === el.dataset.id);
@@ -215,7 +251,7 @@ export class ScheduleView {
   card(p) {
     const m = PLATFORM_META[p.platform];
     return `<div class="post-card ${p.status}" data-id="${p.id}" draggable="${p.status === 'scheduled'}" title="${esc(p.clip?.title || '')}">
-      <div class="thumb-mini" style="background-image:url('${p.clip?.thumbUrl || ''}')"></div>
+      <div class="thumb-mini lazy-bg" data-bg="${esc(p.clip?.thumbUrl || '')}"></div>
       <div style="min-width:0">
         <div class="row small" style="gap:6px"><span class="plat ${p.platform}">${m.icon}</span><b>${hhmm(p.publishedAt || p.scheduledAt)}</b>${p.source === 'auto' ? '<span class="chip auto">auto</span>' : ''}</div>
         <div class="pc-title">${esc(p.clip?.title || '')}</div>
@@ -234,7 +270,7 @@ export class ScheduleView {
         <span class="small">${STATUS[p.status]} · ${p.status === 'publishing' && p.step ? esc(p.step) : new Date(p.publishedAt || p.scheduledAt).toLocaleString()}</span>
         ${p.url ? `<a class="small" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}${icon('external')}</a>` : ''}
         ${p.error ? `<span class="small" style="color:var(--bad)">${esc(p.error)}</span>` : ''}</div></div>
-      ${p.screenshotUrl ? `<a href="${p.screenshotUrl}" target="_blank" rel="noopener" title="What the browser showed when it failed"><img src="${p.screenshotUrl}" alt="Browser screenshot at the failure" style="width:100%;border-radius:10px;border:1px solid var(--border)"></a>` : ''}
+      ${p.screenshotUrl ? `<a href="${p.screenshotUrl}" target="_blank" rel="noopener" title="What the browser showed when it failed"><img src="${p.screenshotUrl}" alt="Browser screenshot at the failure" loading="lazy" decoding="async" style="width:100%;border-radius:10px;border:1px solid var(--border)"></a>` : ''}
       ${p.status === 'scheduled' ? `<div class="row"><input type="datetime-local" class="when" value="${localInput(p.scheduledAt)}"><button class="btn sm resched">Reschedule</button></div>` : ''}
       <div class="row wrap">
         ${p.sessionId ? `<button class="btn sm primary watch">${icon('eye')}Watch</button>` : ''}

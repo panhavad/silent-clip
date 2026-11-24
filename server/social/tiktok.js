@@ -8,6 +8,7 @@ export const tiktok = {
   label: 'TikTok',
   loginUrl: 'https://www.tiktok.com/login?lang=en',
   homeUrl: 'https://www.tiktok.com/tiktokstudio/upload?lang=en',
+  loggedOutUrl: /\/login/,
   hosts: ['tiktok.com'],
   sessionCookies: { urls: ['https://www.tiktok.com'], names: ['sessionid', 'sessionid_ss'] },
 

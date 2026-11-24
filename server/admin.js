@@ -6,10 +6,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { db, CLIPS_DIR, RESTORE_FILE } from './db.js';
+import { db, CLIPS_DIR, RESTORE_FILE, applySettings, userSettings, serverWatchAllowed } from './db.js';
 import { hashPassword, requireAdmin } from './auth.js';
-import { stopUser } from './watch/manager.js';
+import { stopUser, syncUser, queueCommand, watchingOverview } from './watch/manager.js';
 import { removeUserBrowserData } from './social/index.js';
+import { dirSize } from './store.js';
 
 export const router = express.Router();
 router.use(requireAdmin);
@@ -17,10 +18,7 @@ router.use(requireAdmin);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ROLES = ['user', 'admin'];
 const STATUSES = ['pending', 'active', 'disabled'];
-
-function dirSize(dir) {
-  try { return fs.readdirSync(dir).reduce((a, f) => a + fs.statSync(path.join(dir, f)).size, 0); } catch { return 0; }
-}
+const MIN_STORAGE_LIMIT = 1e6;
 
 function userRow(u) {
   const stats = db.prepare(`SELECT
@@ -30,10 +28,11 @@ function userRow(u) {
       (SELECT COUNT(*) FROM posts WHERE user_id = ? AND status = 'published') AS published`).get(u.id, u.id, u.id, u.id);
   let processing = 'browser';
   try { processing = JSON.parse(u.settings || '{}').processing || 'browser'; } catch { /* default */ }
+  if (!serverWatchAllowed(u)) processing = 'browser';
   return {
     id: u.id, email: u.email, name: u.name, avatar: u.avatar, role: u.role, status: u.status,
     google: Boolean(u.google_id), password: Boolean(u.password_hash), createdAt: u.created_at, lastLoginAt: u.last_login_at,
-    processing, storage: dirSize(path.join(CLIPS_DIR, String(u.id))), ...stats,
+    processing, serverWatch: serverWatchAllowed(u), storage: dirSize(path.join(CLIPS_DIR, String(u.id))), storageLimit: u.storage_limit || null, ...stats,
   };
 }
 
@@ -71,7 +70,21 @@ router.patch('/users/:id', (req, res) => {
     return res.status(400).json({ error: 'At least one active administrator is required' });
   }
   const name = req.body.name !== undefined ? String(req.body.name).trim().slice(0, 80) || u.name : u.name;
-  db.prepare('UPDATE users SET role = ?, status = ?, name = ? WHERE id = ?').run(role, status, name, u.id);
+  // Storage limit in bytes; null/0 removes it. Enforced (oldest clips replaced) the next time a clip is saved.
+  let storageLimit = u.storage_limit;
+  if (req.body.storageLimit !== undefined) {
+    const n = Number(req.body.storageLimit || 0);
+    if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: 'Invalid storage limit' });
+    if (n && n < MIN_STORAGE_LIMIT) return res.status(400).json({ error: 'Storage limit must be at least 1 MB' });
+    storageLimit = n ? Math.round(n) : null;
+  }
+  const serverWatch = req.body.serverWatch !== undefined ? (req.body.serverWatch ? 1 : 0) : u.server_watch;
+  db.prepare('UPDATE users SET role = ?, status = ?, name = ?, storage_limit = ?, server_watch = ? WHERE id = ?').run(role, status, name, storageLimit, serverWatch, u.id);
+  if (!serverWatch && u.server_watch) {
+    // Turning it off stops their server watchers and moves them back to watching in the browser.
+    stopUser(u.id);
+    applySettings(getUser(u.id), { processing: 'browser', serverRunning: false });
+  }
   if (status !== 'active') {
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
     stopUser(u.id);
@@ -99,6 +112,37 @@ router.delete('/users/:id', async (req, res) => {
   db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
   fs.rmSync(path.join(CLIPS_DIR, String(u.id)), { recursive: true, force: true });
   res.json({ ok: true });
+});
+
+// ---------- live watching: see and stop what any user is watching ----------
+router.get('/watching', (_req, res) => {
+  res.json(watchingOverview().map((w) => {
+    const u = getUser(w.userId);
+    return u && { ...w, email: u.email, name: u.name, avatar: u.avatar };
+  }).filter(Boolean));
+});
+
+// Stop everything the user is watching: server watchers are switched off; an open browser dashboard stops on its next heartbeat.
+router.post('/watching/:id/stop', (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  if (userSettings(u).serverRunning) applySettings(u, { serverRunning: false });
+  stopUser(u.id);
+  const browser = queueCommand(u.id, { type: 'stop' });
+  res.json({ ok: true, browser });
+});
+
+// Stop one stream: turns off auto-clip for that streamer (so it is not picked up again) wherever it is watched.
+router.post('/watching/:id/streamers/:login/stop', (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  const login = String(req.params.login).toLowerCase();
+  if (!db.prepare('UPDATE streamers SET enabled = 0 WHERE user_id = ? AND login = ?').run(u.id, login).changes) {
+    return res.status(404).json({ error: 'Streamer not found' });
+  }
+  syncUser(u.id);
+  const browser = queueCommand(u.id, { type: 'disable', login });
+  res.json({ ok: true, browser });
 });
 
 // ---------- whole-database backup / restore ----------

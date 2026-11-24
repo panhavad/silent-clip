@@ -3,18 +3,18 @@ import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, DATA_DIR, CLIPS_DIR, userSettings, applySettings, newAccountState } from './db.js';
+import { db, DATA_DIR, CLIPS_DIR, userSettings, applySettings, newAccountState, serverWatchAllowed } from './db.js';
 import {
   loadUser, requireUser, destroySession, hashPassword, verifyPassword, signIn,
   googleConfigured, googleStart, googleCallback,
 } from './auth.js';
 import { masterPlaylist } from './twitch.js';
 import { router as publisher, startScheduler } from './publisher.js';
-import { router as socialRouter } from './social/index.js';
+import { router as socialRouter, startSessionKeepAlive } from './social/index.js';
 import { router as admin } from './admin.js';
 import { router as backup } from './backup.js';
 import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
-import { sanitizeMeta, insertClip } from './store.js';
+import { sanitizeMeta, insertClip, enforceStorageLimit, removeClip, storageUsage } from './store.js';
 import { buildInfo } from './version.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -106,7 +106,7 @@ app.use(serverWatchRouter);
 
 app.get('/api/me', (req, res) => {
   const u = req.user;
-  res.json({ id: u.id, email: u.email, name: u.name, avatar: u.avatar, google: Boolean(u.google_id), role: u.role, settings: userSettings(u) });
+  res.json({ id: u.id, email: u.email, name: u.name, avatar: u.avatar, google: Boolean(u.google_id), role: u.role, serverWatch: serverWatchAllowed(u), settings: userSettings(u) });
 });
 
 app.put('/api/settings', (req, res) => {
@@ -193,7 +193,7 @@ app.post('/api/clips', clipFiles, (req, res) => {
     const row = insertClip(req.user.id, meta, {
       video: req.files.video[0].path, thumb: req.files.thumb?.[0]?.path, source: req.files.source?.[0]?.path,
     });
-    res.json(clipRow(row));
+    res.json({ ...clipRow(row), overwritten: row.overwritten.length });
   } finally { cleanupTmp(req); }
 });
 
@@ -214,7 +214,7 @@ app.get('/api/clips', (req, res) => {
   }
   const f = req.query.filter;
   const filtered = rows.filter((c) => (f === 'new' ? c.isNew : f === 'downloaded' ? c.downloadedAt : f === 'posted' ? Object.keys(c.posted).length : true));
-  res.json({ clips: filtered, counts });
+  res.json({ clips: filtered, counts, storage: storageUsage(req.user.id) });
 });
 
 app.get('/api/clips/:id', (req, res) => {
@@ -251,6 +251,8 @@ app.put('/api/clips/:id/video', clipFiles, (req, res) => {
     }
     if (req.body.transcript !== undefined) viral.transcript = String(req.body.transcript).slice(0, 5000);
     db.prepare('UPDATE clips SET size = ?, thumb_file = ?, caption = ?, viral = ? WHERE id = ?').run(size, thumb, caption, JSON.stringify(viral), r.id);
+    // A re-render can grow the clip, so the storage limit applies here too.
+    enforceStorageLimit(req.user.id, r.id);
     res.json(clipRow(getClip(req)));
   } finally { cleanupTmp(req); }
 });
@@ -258,9 +260,7 @@ app.put('/api/clips/:id/video', clipFiles, (req, res) => {
 app.delete('/api/clips/:id', (req, res) => {
   const r = getClip(req);
   if (!r) return res.status(404).json({ error: 'Not found' });
-  const dir = userDir(req.user.id);
-  for (const f of [r.video_file, r.thumb_file, r.source_file]) if (f) fs.rm(path.join(dir, f), { force: true }, () => {});
-  db.prepare('DELETE FROM clips WHERE id = ?').run(r.id);
+  removeClip(r);
   res.json({ ok: true });
 });
 
@@ -314,6 +314,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   app.listen(PORT, () => console.log(`slientclip ${buildInfo.label} listening on :${PORT}`));
   startScheduler();
   startServerWatchers();
+  startSessionKeepAlive();
 }
 
 export default app;

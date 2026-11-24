@@ -42,8 +42,50 @@ export function insertClip(userId, meta, files) {
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, userId, meta.streamer, meta.title, meta.description, JSON.stringify(meta.hashtags), meta.caption,
       JSON.stringify(meta.viral), meta.duration, meta.width, meta.height, size, video, thumb, source, Date.now());
+  const overwritten = enforceStorageLimit(userId, id);
   onClipCreated(userId);
-  return db.prepare('SELECT * FROM clips WHERE id = ?').get(id);
+  return Object.assign(db.prepare('SELECT * FROM clips WHERE id = ?').get(id), { overwritten });
+}
+
+export function dirSize(dir) {
+  try { return fs.readdirSync(dir).reduce((a, f) => a + fs.statSync(path.join(dir, f)).size, 0); } catch { return 0; }
+}
+
+const fileSize = (dir, f) => { try { return f ? fs.statSync(path.join(dir, f)).size : 0; } catch { return 0; } };
+
+/** Delete a clip's files and row (its posts go with it). */
+export function removeClip(row) {
+  const dir = userDir(row.user_id);
+  for (const f of [row.video_file, row.thumb_file, row.source_file]) if (f) fs.rmSync(path.join(dir, f), { force: true });
+  db.prepare('DELETE FROM clips WHERE id = ?').run(row.id);
+}
+
+export function storageUsage(userId) {
+  const limit = db.prepare('SELECT storage_limit FROM users WHERE id = ?').get(userId)?.storage_limit || null;
+  return { used: dirSize(path.join(CLIPS_DIR, String(userId))), limit };
+}
+
+/**
+ * Keep a user within the storage limit an admin set: while over it, their oldest clips are deleted
+ * so new ones can take their place. The clip just saved (`keepId`) and clips waiting to be posted are kept.
+ * Returns the removed clips ({ id, title }).
+ */
+export function enforceStorageLimit(userId, keepId = '') {
+  const { used, limit } = storageUsage(userId);
+  if (!limit || used <= limit) return [];
+  const dir = userDir(userId);
+  const oldest = db.prepare(`SELECT * FROM clips c WHERE c.user_id = ? AND c.id != ?
+      AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id = c.id AND p.status IN ('scheduled', 'publishing'))
+      ORDER BY c.created_at ASC`).all(userId, keepId);
+  let left = used;
+  const removed = [];
+  for (const c of oldest) {
+    if (left <= limit) break;
+    left -= [c.video_file, c.thumb_file, c.source_file].reduce((a, f) => a + fileSize(dir, f), 0);
+    removeClip(c);
+    removed.push({ id: c.id, title: c.title });
+  }
+  return removed;
 }
 
 export { json };

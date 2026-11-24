@@ -12,7 +12,7 @@ The server also stores data (accounts, streamers, finished clips, schedules) and
 ## Features
 
 - Email/password accounts + **Google single sign-on**; **new accounts need admin approval**
-- **Admin console**: approve, disable/enable, create, reset passwords, change roles and delete any account; per-user usage; **whole-database backup / restore** (clip video files excluded)
+- **Admin console**: approve, disable/enable, create, reset passwords, change roles and delete any account; per-user usage, **storage limits** (when full, the oldest clips are replaced) and a **server-watching switch**; **whole-database backup / restore** (clip video files excluded)
 - **Settings backup**: every user can download their settings, auto-publish schedule and streamer list as a file and restore it any time (merge or replace)
 - **Run on server** option: watch and clip on the server so it keeps clipping when the web is closed
 - Add Twitch streamers by link (`https://www.twitch.tv/name`) — watching starts automatically when they go live
@@ -84,10 +84,12 @@ Settings per user: **background** (hidden browser, reports the result) or **fore
 
 Safety rules:
 - Before every post the saved session is checked. If the platform logged it out, the post fails with "log in again" and the account is flagged in Settings.
+- **Logins are kept alive.** Every 6 hours (`SOCIAL_KEEPALIVE_HOURS`, `0` turns it off) each saved login is opened in the background, visits the platform for ~20 s (`SOCIAL_KEEPALIVE_DWELL_SEC`) so the site refreshes its login cookies, and is checked to confirm it's still signed in. Cookies that would normally vanish when the browser restarts are kept (with Chrome's maximum 400-day lifetime), and **Check** really loads the platform instead of only looking at cookies.
+- Your SlientClip sign-in doesn't expire while you use it: every visit extends it to 400 days.
 - A failure **before** pressing Post is retried automatically (up to 3 times). A failure **after** pressing Post is never retried, because the video may already be live. The same applies to posts interrupted by a server restart.
 - Only one browser runs per account at a time; `MAX_PUBLISH_BROWSERS` (default 2) limits browsers server-wide.
 
-If a platform refuses the login in an automated browser (Google sometimes shows "This browser or app may not be secure"), log in on your own browser, export that site's cookies with the *Cookie-Editor* extension (**Export → JSON**), and use the upload button next to the account to import them.
+If a platform refuses the login in an automated browser (Google sometimes shows "This browser or app may not be secure"), log in on your own browser, export that site's cookies with the *Cookie-Editor* extension (**Export → JSON**), and use the upload button next to the account to import them. Export from a separate browser profile or a private window and close it without signing out: if the same Google login keeps being used in your everyday browser, Google rotates its cookies there and signs the imported copy out.
 
 Notes: the Docker image includes Chromium. `npm run dev` finds an installed Chrome or Edge, or you can set `BROWSER_PATH`. Platforms change their pages from time to time; when that breaks a step, the failure screenshot shows where. Automated posting may be against a platform's terms, so use your own accounts responsibly.
 
@@ -138,6 +140,9 @@ The running release is shown as a badge next to the logo (hover it for the commi
 
 - The first account ever created (or the account with `ADMIN_EMAIL`) is an active administrator. Everyone else who signs up (email or Google) is **pending** until an admin approves them; set `REQUIRE_APPROVAL=false` to skip approval.
 - **Admin → Accounts**: approve, disable / enable (signs the user out and stops their server watchers), create accounts (blank password = generated temporary password shown once), reset passwords, promote / demote admins, delete accounts with all their clips. The last active admin cannot be removed or demoted.
+- **Storage limits**: the **Storage** column shows each account's clip storage (videos, thumbnails and kept sources) and lets an admin set a limit (presets or a custom size in GB; *No limit* is the default). When a clip is saved and the account is over its limit, its **oldest clips are deleted to make room**, like a recording loop. The clip just saved and clips with a scheduled or in-progress post are never removed. Users see a usage bar in their clip library, and a notice when older clips were replaced.
+- **Watching now** lists every user who is watching right now, on the server or in their browser (open dashboards report what they watch every 10 s), with each stream's live status. **Stop** on a stream turns off auto-clip for that streamer; **Stop all** switches off the user's server watching and tells their open browser to stop. Browsers follow within about 10 seconds, and the user sees a notice.
+- **Server watching** (switch under each account's usage): allowed by default. Turning it off immediately stops that account's server watchers, moves them back to watching in their browser, and blocks choosing **Server** again (the option is greyed out with an explanation; an open page switches back on its own). Turn it back on to let them pick **Server** again.
 - **Admin → Database backup** downloads a consistent SQLite copy (`VACUUM INTO`) of everything except the video files. **Restore** validates the file, swaps it in and restarts the server (Docker restarts the container). Social-account logins live in the browser profiles under `data/browser/`, not in the database, so after restoring on another server users log in again.
 - **Settings → Backup & restore settings** (every user): JSON file with clipping settings, auto-publish schedule and streamers; restore merges or replaces the streamer list. Clips and linked-account tokens are not included.
 

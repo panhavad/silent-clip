@@ -12,6 +12,8 @@ import { DATA_DIR } from '../db.js';
 export const PROFILES_DIR = path.join(DATA_DIR, 'browser');
 const VIEWPORT = { width: 1280, height: 800 };
 const LOGIN_IDLE_MS = 15 * 60 * 1000;
+// Chrome caps cookie lifetimes at 400 days.
+const KEEP_COOKIES_SEC = 400 * 86400;
 
 const CANDIDATES = {
   win32: [
@@ -230,9 +232,27 @@ export class BrowserSession {
     if (byProfile.get(this.key) === this) byProfile.delete(this.key);
   }
 
-  async close() {
-    this.release();
+  /**
+   * Cookies without an expiry are dropped when Chrome restarts, and this profile is relaunched for every
+   * post. Give them a long expiry before closing (like Chrome's "continue where you left off") so logins
+   * that rely on them survive.
+   */
+  async persistSessionCookies() {
     const ctx = this.context;
+    if (!ctx) return 0;
+    const now = Math.floor(Date.now() / 1000);
+    const sessionOnly = (await ctx.cookies().catch(() => [])).filter((c) => c.expires === -1 && c.value && !c.partitionKey);
+    let kept = 0;
+    for (const c of sessionOnly) {
+      try { await ctx.addCookies([{ ...c, expires: now + KEEP_COOKIES_SEC }]); kept++; } catch { /* e.g. __Host- cookies that can't be re-set */ }
+    }
+    return kept;
+  }
+
+  async close() {
+    const ctx = this.context;
+    await this.persistSessionCookies().catch(() => {});
+    this.release();
     this.context = null;
     await ctx?.close().catch(() => {});
   }

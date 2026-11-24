@@ -8,6 +8,7 @@ export const youtube = {
   label: 'YouTube Shorts',
   loginUrl: 'https://accounts.google.com/ServiceLogin?service=youtube&hl=en&continue=https%3A%2F%2Fstudio.youtube.com%2F',
   homeUrl: 'https://studio.youtube.com/',
+  loggedOutUrl: /accounts\.google\.com|ServiceLogin/,
   hosts: ['youtube.com', 'google.com'],
   sessionCookies: { urls: ['https://www.youtube.com'], names: ['LOGIN_INFO', 'SID', '__Secure-3PSID'] },
 

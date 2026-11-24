@@ -368,3 +368,40 @@ body:has(.modal-back) { overflow: hidden; }
   .bview-head .b-done { order: 5; flex: 1 0 100%; justify-content: center; }
   .bview-type { flex-wrap: nowrap !important; }
 }
+/* Loading placeholders (skeletons) and lazily loaded images */
+@keyframes sk-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes sk-in { from { opacity: 0; } }
+.sk, .lazy-bg:not(.loaded) {
+  background: linear-gradient(90deg, rgba(143, 163, 189, .10) 30%, rgba(143, 163, 189, .24) 50%, rgba(143, 163, 189, .10) 70%) 0 0 / 200% 100% !important;
+  animation: sk-shimmer 1.3s linear infinite;
+}
+.sk-card { pointer-events: none; animation: sk-in .25s .12s both; }
+.sk-card:hover { transform: none; }
+.sk-lines { display: grid; gap: 8px; flex: 1; min-width: 0; }
+.sk-line { height: 12px; border-radius: 6px; max-width: 100%; }
+.sk-line.sm { height: 9px; }
+.sk-block { height: 48px; border-radius: 8px; }
+.clip-card.sk-card .info { gap: 8px; }
+@media (prefers-reduced-motion: reduce) { .sk, .lazy-bg:not(.loaded) { animation: none; } }
+
+/* Per-user storage limit (admin table + clip library) */
+.quota { display: grid; gap: 6px; min-width: 150px; }
+.quota-bar { height: 6px; border-radius: 99px; background: #1b2a40; overflow: hidden; }
+.quota-bar > div { height: 100%; background: var(--accent); }
+.quota-bar.high > div { background: var(--warn); }
+.quota-bar.full > div { background: var(--bad); }
+.storage-note { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.storage-note .quota-bar { width: 140px; }
+
+/* Compact switch (admin table) and disabled segmented-control buttons */
+.switch.sm { font-size: 12px; color: var(--muted); }
+.switch.sm span { width: 34px; height: 20px; flex: none; }
+.switch.sm span::after { width: 14px; height: 14px; }
+.switch.sm input:checked + span::after { left: 17px; }
+.seg button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Admin: who is watching now */
+.watch-list { display: grid; gap: 10px; }
+.watch-user { display: grid; gap: 6px; padding: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; }
+.watch-where { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.watch-stream { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 8px; background: #0c1626; border-radius: 8px; font-size: 13px; }

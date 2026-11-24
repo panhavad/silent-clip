@@ -6,6 +6,7 @@ export const instagram = {
   label: 'Instagram Reels',
   loginUrl: 'https://www.instagram.com/accounts/login/?hl=en',
   homeUrl: 'https://www.instagram.com/?hl=en',
+  loggedOutUrl: /accounts\/login/,
   hosts: ['instagram.com', 'facebook.com'],
   sessionCookies: { urls: ['https://www.instagram.com'], names: ['sessionid'] },
 

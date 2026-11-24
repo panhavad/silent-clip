@@ -9,10 +9,11 @@ import path from 'node:path';
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'slientclip-social-'));
 process.env.PUBLISH_DRY_RUN = 'false';
+process.env.SOCIAL_KEEPALIVE_DWELL_SEC = '0';
 const { default: app } = await import('../server/index.js');
 const { runDuePosts } = await import('../server/publisher.js');
-const { DRIVERS } = await import('../server/social/index.js');
-const { browserAvailable } = await import('../server/social/browser.js');
+const { DRIVERS, refreshDueSessions } = await import('../server/social/index.js');
+const { browserAvailable, openSession } = await import('../server/social/browser.js');
 const { humanClick, clearAndType, waitForAny, LoggedOutError } = await import('../server/social/human.js');
 
 const skip = browserAvailable() ? false : 'no Chrome, Edge or Chromium installed';
@@ -35,7 +36,7 @@ const SITE = `http://127.0.0.1:${site.address().port}`;
 
 let mode = 'ok';
 DRIVERS.mock = {
-  id: 'mock', label: 'Mock', loginUrl: `${SITE}/login`, hosts: ['127.0.0.1'],
+  id: 'mock', label: 'Mock', loginUrl: `${SITE}/login`, homeUrl: `${SITE}/upload`, loggedOutUrl: /\/login/, hosts: ['127.0.0.1'],
   sessionCookies: { urls: [SITE], names: ['sid'] },
   async identify() { return { username: 'mockuser', displayName: 'Mock User' }; },
   async publish({ page, file, clip, step, final }) {
@@ -110,6 +111,27 @@ test('browser login through the live viewer, then human-like posting with result
   assert.equal(acc.session, null, 'login window closed after confirming');
 
   // The saved profile keeps the session for later checks and posts.
+  assert.equal((await call('/api/accounts/mock/check', { method: 'POST' })).data.loggedIn, true);
+
+  // Cookies without an expiry survive the browser being relaunched for the next post.
+  const me = (await call('/api/me')).data;
+  let s = await openSession({ userId: me.id, platform: 'mock', kind: 'check' });
+  await s.context.addCookies([{ name: 'tabonly', value: '1', url: SITE }]);
+  await s.close();
+  s = await openSession({ userId: me.id, platform: 'mock', kind: 'check' });
+  const kept = (await s.cookies([SITE])).find((c) => c.name === 'tabonly');
+  await s.close();
+  assert.ok(kept && kept.expires > Date.now() / 1000 + 300 * 86400, 'session-only cookie kept with a long expiry');
+
+  // Background keep-alive revisits the platform and records the refresh.
+  const refreshed = await refreshDueSessions({ force: true });
+  assert.deepEqual(refreshed.find((r) => r.platform === 'mock'), { userId: me.id, platform: 'mock', loggedIn: true });
+  assert.ok((await call('/api/accounts')).data.keepAliveHours > 0);
+
+  // A login the site has dropped (it sends you to its login page) is reported as logged out, not just "cookies present".
+  DRIVERS.mock.homeUrl = `${SITE}/login`;
+  assert.equal((await call('/api/accounts/mock/check', { method: 'POST' })).data.loggedIn, false);
+  DRIVERS.mock.homeUrl = `${SITE}/upload`;
   assert.equal((await call('/api/accounts/mock/check', { method: 'POST' })).data.loggedIn, true);
 
   const form = new FormData();

@@ -2,7 +2,10 @@ import crypto from 'node:crypto';
 import { db, newAccountState } from './db.js';
 
 const SESSION_COOKIE = 'sc_session';
-const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
+// Sign-ins don't expire while in use: every visit pushes the expiry out again (400 days is the
+// longest a browser keeps a cookie), renewed at most once a day.
+const SESSION_TTL_MS = 400 * 24 * 3600 * 1000;
+const SESSION_RENEW_MS = 24 * 3600 * 1000;
 const secureCookies = () => (process.env.PUBLIC_URL || '').startsWith('https://');
 
 export function parseCookies(req) {
@@ -45,12 +48,19 @@ export function destroySession(req, res) {
   setCookie(res, SESSION_COOKIE, '', 0);
 }
 
-export function loadUser(req, _res, next) {
+export function loadUser(req, res, next) {
   const id = parseCookies(req)[SESSION_COOKIE];
   if (id) {
-    const row = db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+    const row = db.prepare(`SELECT u.*, s.expires_at AS session_expires_at FROM sessions s JOIN users u ON u.id = s.user_id
                             WHERE s.id = ? AND s.expires_at > ?`).get(id, Date.now());
-    if (row && row.status === 'active') req.user = row;
+    if (row && row.status === 'active') {
+      if (row.session_expires_at < Date.now() + SESSION_TTL_MS - SESSION_RENEW_MS) {
+        db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(Date.now() + SESSION_TTL_MS, id);
+        setCookie(res, SESSION_COOKIE, id, SESSION_TTL_MS / 1000);
+      }
+      delete row.session_expires_at;
+      req.user = row;
+    }
   }
   next();
 }

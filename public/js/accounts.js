@@ -1,6 +1,7 @@
 import { api, esc, toast, timeAgo } from './api.js';
 import { icon } from './icons.js';
 import { openBrowserViewer } from './browser-view.js';
+import { skeleton, showLoading } from './loader.js';
 
 export const PLATFORM_META = {
   youtube: { label: 'YouTube Shorts', short: 'YouTube', icon: icon('youtube'), cls: 'yt' },
@@ -27,13 +28,22 @@ export async function loginTo(platform, onDone) {
 }
 
 export async function renderAccounts(root) {
-  const [data, me] = await Promise.all([getAccounts(true), api('/api/me')]);
+  // First render shows a skeleton; re-renders after an action keep the current panel until fresh data arrives.
+  const first = !root.querySelector('.accounts');
+  const idle = first ? showLoading(root, skeleton.accounts()) : () => {};
+  let data, me;
+  try {
+    [data, me] = await Promise.all([getAccounts(true), api('/api/me')]);
+  } catch (e) {
+    if (first) root.innerHTML = `<div class="empty">Couldn't load social accounts: ${esc(e.message)}</div>`;
+    throw e;
+  } finally { idle(); }
   const s = me.settings;
   const b = data.browser;
   root.innerHTML = `
     <div class="section-head"><div><h2 style="margin:0">Social accounts</h2>
       <div class="muted small">SlientClip posts by driving a real browser on the server, the way you would: open the uploader, pick the video, type the caption, press Post.
-      Log in once and the session is kept for future posts. No API keys or developer apps needed.</div></div>
+      Log in once and the session is kept for future posts. No API keys or developer apps needed.${data.keepAliveHours ? ` To keep you signed in, each login is opened in the background every ${data.keepAliveHours} hours.` : ''}</div></div>
       ${data.demo ? '<span class="badge elsewhere" title="PUBLISH_DRY_RUN=true — posting is simulated">Demo mode</span>' : ''}</div>
     ${b.available ? '' : `<div class="notice" style="margin-bottom:12px">No Chrome, Edge or Chromium was found on the server, so logging in and posting can't run${data.demo ? ' (demo mode simulates it)' : ''}. Install one, or set <code>BROWSER_PATH</code>.</div>`}
     <div class="accounts">${data.accounts.map((a) => {
@@ -68,7 +78,8 @@ export async function renderAccounts(root) {
       <label class="field">TikTok: who can watch
         <select name="tiktokPrivacy"><option value="everyone">Everyone</option><option value="friends">Friends</option><option value="only_me">Only me</option></select></label>
     </div>
-    <div class="small muted" style="margin-top:10px">If a platform blocks the login (Google sometimes says "This browser may not be secure"), log in on your own browser, export that site's cookies with the Cookie-Editor extension (Export → JSON), and import the file with the ${icon('upload')} button.</div>`;
+    <div class="small muted" style="margin-top:10px">If a platform blocks the login (Google sometimes says "This browser may not be secure"), log in on your own browser, export that site's cookies with the Cookie-Editor extension (Export → JSON), and import the file with the ${icon('upload')} button.
+      To keep an imported login signed in, export it from a <b>separate browser profile or a private window</b> and then close that window without signing out. If you keep using the same login in your everyday browser, Google can sign the copy out.</div>`;
 
   for (const k of ['publishView', 'youtubeVisibility', 'tiktokPrivacy']) {
     const sel = root.querySelector(`select[name=${k}]`);
