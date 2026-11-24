@@ -482,3 +482,11 @@ body:has(.modal-back) { overflow: hidden; }
 .ext-box .row svg { width: 16px; height: 16px; }
 .account[data-p=youtube] { grid-column: 1 / -1; flex-wrap: wrap; }
 .account .ext-box { flex: 1 1 100%; }
+/* Find streamers: collapse / expand */
+.streamer-finder .find-title { cursor: pointer; user-select: none; }
+.streamer-finder .find-toggle svg { transition: transform .15s; transform: rotate(90deg); }
+.streamer-finder.collapsed .find-toggle svg { transform: rotate(0deg); }
+.streamer-finder.collapsed .find-body,
+.streamer-finder.collapsed .find-mode,
+.streamer-finder.collapsed .find-desc { display: none; }
+.streamer-finder.collapsed .section-head { margin-bottom: 0; }

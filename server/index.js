@@ -40,6 +40,8 @@ app.use('/vendor/ffmpeg-util', express.static(nm('@ffmpeg/util/dist/esm'), vendo
 app.use('/vendor/ffmpeg-core', express.static(nm('@ffmpeg/core/dist/esm'), vendorOpts));
 app.use('/vendor/transformers', express.static(nm('@huggingface/transformers/dist'), vendorOpts));
 app.use('/vendor/ort', express.static(nm('onnxruntime-web/dist'), vendorOpts));
+// Signed-out visitors get the product page at "/"; once signed in, the same address opens the app.
+app.get('/', (req, res, next) => (req.user ? next() : res.sendFile(path.join(ROOT, 'public', 'landing.html'), { headers: { 'Cache-Control': 'no-cache' } })));
 // App code must revalidate on every load so browsers pick up auto-deployed updates immediately.
 app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 

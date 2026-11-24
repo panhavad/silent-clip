@@ -1,52 +1,89 @@
 # SlientClip
 
-Auto-clip the most viral moments from Twitch live streams into vertical **YouTube Shorts / TikTok / Instagram Reels** — with captions, title, description, viral point and hashtags.
+Auto-clip the most viral moments from Twitch live streams into vertical **YouTube Shorts / TikTok / Instagram Reels**, with captions, title, description, viral point and hashtags, then post them on a schedule.
+
+![Live monitor: watching two live streams, with hype meters, chat rate and buffers](public/img/screenshots/live-monitor.webp)
 
 Each user chooses **where watching and clipping run**:
 
 - **Browser** (default): watching, chat analysis, cutting and 9:16 rendering run in the user's browser (Web Workers + ffmpeg.wasm). The server only stores the results.
 - **Server**: the same pipeline runs inside the server (native ffmpeg + Whisper on Node), so clipping continues after the user closes the web app or turns off their computer.
 
-The server also stores data (accounts, streamers, finished clips, schedules) and posts the finished MP4 to YouTube / TikTok / Instagram by driving a real, logged-in browser like a person would, so scheduled posts go out even when nobody has the app open.
+Finished clips are posted to YouTube / TikTok / Instagram **without API keys**, by driving a real logged-in browser like a person would: the server's own browser, or for YouTube, **your own Chrome through the SlientClip extension**, so the YouTube login never lives (or expires) on the server.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Find streamers by category](public/img/screenshots/find-streamers.webp) **Find streamers** by name or category, see who's live, add with one click | ![Who's live in a category](public/img/screenshots/find-streamers-category.webp) **Live in a category**, most viewers first, filter by language |
+| ![Clip library](public/img/screenshots/clips.webp) **Clip library** with one-click posting per platform | ![Selecting clips](public/img/screenshots/clips-select.webp) **Select** clips to delete or mark published |
+| ![Clip details](public/img/screenshots/clip-editor.webp) **Clip details**: viral score, title, description, hashtags, captions | ![Schedule](public/img/screenshots/schedule.webp) **Auto-publish** with random or fixed times, and the calendar |
+| ![Social accounts](public/img/screenshots/social-accounts.webp) **Social accounts**, login history and the Chrome extension | ![Extension popup](public/img/screenshots/extension-popup.webp) **SlientClip Publisher** extension popup |
+| ![Admin console](public/img/screenshots/admin.webp) **Admin**: approvals, storage limits, server watching, who's watching now, database backup | ![Phone layout](public/img/screenshots/mobile-clips.webp) **Phone** layout |
 
 ## Features
 
-- Email/password accounts + **Google single sign-on**; **new accounts need admin approval**
-- **Admin console**: approve, disable/enable, create, reset passwords, change roles and delete any account; per-user usage, **storage limits** (when full, the oldest clips are replaced) and a **server-watching switch**; **whole-database backup / restore** (clip video files excluded)
-- **Settings backup**: every user can download their settings, auto-publish schedule and streamer list as a file and restore it any time (merge or replace)
-- **Run on server** option: watch and clip on the server so it keeps clipping when the web is closed
-- Add Twitch streamers by link (`https://www.twitch.tv/name`) — watching starts automatically when they go live
-- **Multi-stream watching** — one worker per streamer, any number at once
-- **Background mode** (silent, inside the app tab — it may sit in a background tab) or **Foreground mode** (one browser window per streamer, or one grid window, with live players)
-- Chat analysis (Twitch IRC over WebSocket) detects spikes in message rate, emotes, hype words and copy-paste spam against a rolling baseline
-- On a viral moment the browser cuts **20 s before + 10 s after** (configurable) from an in-memory HLS ring buffer, renders **9:16** (blurred-background or center-crop) and uploads it
-- **Every clip is captioned by default**: a hook headline, the top chat reaction bubble, and **spoken-word subtitles** transcribed in the browser with Whisper (transformers.js, WebGPU or WebAssembly) in the streamer's Twitch broadcast language
-- Auto-generated **title, description, viral point (score, reason, chat evidence) and hashtags**
-- Clip library with **New / Downloaded / Posted / Scheduled** tracking, editable metadata, editable subtitles + caption re-render, **Caption all clips** (adds subtitles to older clips) and download
-- **Social accounts without API keys**: log in to YouTube, TikTok and Instagram once through a live view of the server's browser. Then **Post now** or **Schedule** any clip, and the server's browser uploads it like a person would, in the background with a success/failure report or in the foreground where you can watch it.
-- **Auto-publish** — per platform, either **Random times** (you set how many videos a day and between which hours; the system picks natural-looking upload times that change every day, and **Shuffle times** picks new ones) or **Fixed times** (e.g. TikTok 11:00 / 16:00 / 20:00), plus posting days and a minimum viral score; the planner fills upcoming slots with your best unposted clips and publishes them automatically
-- **Schedule calendar** (week / month) — every scheduled, published and failed post, open slots, drag-and-drop rescheduling, post now / retry / unschedule
-- `docker compose` deployment; you deploy updates yourself with `git pull` + `docker compose up -d --build`
+**Finding and watching streams**
+- Add Twitch streamers by link (`https://www.twitch.tv/name`), or **Find streamers** on the Streamers tab: search channels **by name**, or pick a **category** to see who's live in it right now (most viewers first, optional language filter) and **Add** with one click. The finder can be collapsed and remembers it.
+- **Multi-stream watching**: one worker per streamer, any number at once. Watching starts automatically when a streamer goes live.
+- **Background mode** (silent, inside the app tab, which may sit in a background tab) or **Foreground mode** (one browser window per streamer, or one grid window, with live players).
+- **Run on server** option: watch and clip on the server, so clipping continues when the web app is closed.
+- Watching only shows as running when it really is, and never starts by itself unless you turn on auto-start.
+
+**Clipping**
+- Chat analysis (Twitch IRC over WebSocket) detects spikes in message rate, emotes, hype words and copy-paste spam against a rolling baseline.
+- On a viral moment the app cuts **20 s before + 10 s after** (configurable) from an in-memory HLS ring buffer, renders **9:16** (blurred background or center crop) and saves it.
+- **Every clip is captioned by default**: a hook headline, the top chat reaction bubble, and **spoken-word subtitles** transcribed with Whisper in the streamer's broadcast language.
+- Auto-generated **title, description, viral point (score, reason, chat evidence) and hashtags**.
+
+**Clip library**
+- **New / All / Downloaded / Posted** tabs, editable metadata and subtitles with caption re-render, **Caption all clips**, download.
+- **YouTube / TikTok / Instagram buttons on every card**: one click posts the clip now, and the button shows whether it's posting, scheduled or posted.
+- **Select** mode: tick clips or **Select all** in a tab, then **Delete** them or **Mark published**. Published clips are never auto-posted or scheduled again and are deleted automatically 24 hours later.
+- Lazy loading with skeleton placeholders.
+
+**Posting and scheduling**
+- **Social accounts without API keys**: log in once through a live view of the server's browser; posts run in the background with a success/failure report, or in the foreground where you can watch.
+- **YouTube from your own Chrome**: the **SlientClip Publisher** extension uploads from the Chrome you're signed in to, so the login never expires on the server.
+- **Auto-publish** per platform: **Random times** (N videos a day inside a time window, natural-looking times that change daily, **Shuffle times**) or **Fixed times**, plus posting days and a minimum viral score. The planner fills upcoming slots with your best unposted clips.
+- **Schedule calendar** (week / month): scheduled, published and failed posts, open slots, drag-and-drop rescheduling, post now / retry / unschedule. Posts of deleted clips stay as **history**.
+- Logins are kept alive in the background, YouTube signs itself back in when it can, and each account has a **login history** showing why a login was kept or lost.
+
+**Accounts and admin**
+- Email/password accounts and **Google sign-in**; **new accounts need admin approval**.
+- **Admin console**: approve, disable, create, reset passwords, change roles, delete; per-user usage, **storage limits** (oldest clips are replaced when full), a **server-watching switch**, **Watching now** with **Stop**, and **whole-database backup / restore**.
+- **Settings backup**: every user can download and restore their settings, schedule and streamer list.
+- Sign-ins don't expire while in use (sliding 400 days).
+
+**Deployment**
+- A **product landing page** at `/` for visitors who aren't signed in: hero, how it works, features with screenshots, use cases, pricing (monthly / yearly), FAQ and sign-up buttons. Signed-in users get the app at the same address. Copy and prices live in `public/landing.html`.
+- `docker compose` with Chromium and ffmpeg included; you deploy updates with `git pull` + `docker compose up -d --build`.
+- Responsive UI: phones get scrolling tabs, two clips per row, a full-screen editor, a one-column calendar and card-style admin tables.
 
 ## Architecture
 
 ```
 Browser (per user)                                        Server (Node + SQLite)
-┌───────────────────────────────────────────────┐         ┌──────────────────────────┐
-│ watcher.worker.js  (one per streamer)         │         │ auth (email + Google)    │
-│  ├─ live check   → gql.twitch.tv (CORS)       │  ───►   │ streamers / settings     │
-│  ├─ HLS buffer   → Twitch CDN segments (CORS) │         │ clips: mp4/jpg/source    │
-│  ├─ chat         → irc-ws.chat.twitch.tv      │         │ master-playlist relay*   │
-│  └─ analyzer     → viral moment               │         └──────────────────────────┘
-│ render.js (ffmpeg.wasm) → 9:16 mp4 + captions │──upload──► /api/clips │ publisher: queue +       │
-└───────────────────────────────────────────────┘         │  auto-planner            │
-                                                          │ Chromium (one profile per│
-                                                          │  user + platform) ──────►│ YouTube Studio / TikTok Studio / instagram.com
-                                                          └──────────────────────────┘
+┌───────────────────────────────────────────────┐         ┌───────────────────────────────┐
+│ watcher.worker.js  (one per streamer)         │         │ auth (email + Google)         │
+│  ├─ live check   → gql.twitch.tv (CORS)       │  ───►   │ streamers / settings / admin  │
+│  ├─ HLS buffer   → Twitch CDN segments (CORS) │         │ clips: mp4 / jpg / source     │
+│  ├─ chat         → irc-ws.chat.twitch.tv      │         │ master-playlist relay*        │
+│  └─ analyzer     → viral moment               │         │ server watchers (ffmpeg,      │
+│ render.js (ffmpeg.wasm) → 9:16 mp4 + captions │─upload─►│   Whisper) for "Run on server"│
+└───────────────────────────────────────────────┘         │ publisher: queue + planner    │
+                                                          │  ├─ Chromium profile per user │──► YouTube Studio /
+                                                          │  │  + platform (server posts) │    TikTok Studio / Instagram
+                                                          │  └─ /api/ext for the extension│
+                                                          └───────────────┬───────────────┘
+Your Chrome + SlientClip Publisher extension                              │ due YouTube posts,
+┌───────────────────────────────────────────────┐                         │ video, results
+│ background.js: polls every 30 s, claims a post│◄────────────────────────┘
+│ youtube-upload.js: uploads in a Studio tab    │──► YouTube Studio (your signed-in account)
+└───────────────────────────────────────────────┘
 ```
 
 \* Twitch's `usher` endpoint (the master `.m3u8`, a tiny text file) only sends CORS headers to twitch.tv, so the server relays just that one text manifest. Media playlists and all video segments are fetched by the browser directly.
-
 ## Quick start (Docker Compose)
 
 ```bash
@@ -102,6 +139,8 @@ If YouTube logins on the server keep expiring, let your own Chrome do the upload
 2. Make sure that Chrome is signed in to YouTube with the channel you want to post to.
 3. Open SlientClip in that Chrome, click the **SlientClip Publisher** toolbar icon and press **Connect this SlientClip tab**. The YouTube account switches to *through your Chrome*.
 
+<img src="public/img/screenshots/extension-popup.webp" alt="SlientClip Publisher popup: connected, YouTube signed in, recent posts" width="370">
+
 From then on, **Post now**, scheduled posts and auto-publish for YouTube are handed to the extension. Every 30 seconds it checks for due posts, opens YouTube Studio in a background tab, uploads the clip, types the title, description and hashtags, sets the audience and your visibility setting, presses Publish and reports the link back. The post shows each step live, like server posts. Keep Chrome open for scheduled posts; anything due while Chrome was closed goes out within a minute of opening it.
 
 - Same safety rules as the server browser: failures before Publish are retried (up to 3 times), failures after pressing Publish are not, and an upload that stops reporting for 15 minutes (`EXT_STALE_MIN`) is marked failed.
@@ -135,7 +174,7 @@ The running release is shown as a badge next to the logo (hover it for the commi
 
 ## Using it
 
-1. Sign in (the first account is the administrator; later sign-ups wait in **Admin → Accounts** until approved) → **Streamers** → paste Twitch links, or use **Find streamers**: search channels **by name**, or pick a **category** (most watched first, or search one) to see who's live in it now, sorted by viewers and optionally filtered by language, then **Add** with one click.
+1. Open the site: visitors see the product page, and **Start free** / **Sign in** lead to the account form. Sign in (the first account is the administrator; later sign-ups wait in **Admin → Accounts** until approved) → **Streamers** → paste Twitch links, or use **Find streamers**: search channels **by name**, or pick a **category** (most watched first, or search one) to see who's live in it now, sorted by viewers and optionally filtered by language, then **Add** with one click. **Hide** folds the finder away (remembered on that device).
 2. **Live monitor** → choose **Browser** or **Server**, then (browser) **Background** or **Foreground** → **Start watching**.
    - **Server** keeps watching and clipping after you close the page; come back any time to see progress and clips. The choice survives server restarts and updates.
    - Foreground opens a window per streamer (or one grid window). If the browser blocks pop-ups, allow them for the site or use **Watch in window** per streamer.
@@ -164,12 +203,36 @@ Watching only shows as running when it really is. Watching in the browser stops 
 
 The speech model (~100 MB, `onnx-community/whisper-base_timestamped`) is downloaded from Hugging Face the first time a browser captions a clip and cached afterwards. Subtitles can be corrected per clip (`start-end | text` lines) and re-rendered.
 
+## Configuration
+
+Set these in `.env` (Docker Compose passes the common ones through; see `.env.example`).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PUBLIC_URL` | – | Public address, e.g. `https://clips.example.com`; `https://` makes sign-in cookies `Secure` |
+| `APP_PORT` / `PORT` | `8080` | Port published by Docker / port the app listens on |
+| `ALLOW_REGISTRATION` | `true` | `false` turns off sign-up |
+| `REQUIRE_APPROVAL` | `true` | `false` activates new accounts without admin approval |
+| `ADMIN_EMAIL` | – | This account is always an active administrator |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` | – | Google sign-in (see above) |
+| `TWITCH_AUTH_TOKEN` | – | Turbo/subscriber OAuth token, so ad breaks don't replace the stream |
+| `MAX_SERVER_STREAMERS` / `MAX_SERVER_WATCHERS` | `10` / `50` | Server watching limits per user / in total |
+| `MAX_UPLOAD_MB` | `300` | Largest clip upload |
+| `PUBLISH_DRY_RUN` | `false` | `true` simulates posts (*Demo mode*); the extension stops before Publish |
+| `MAX_PUBLISH_BROWSERS` | `2` | Server browsers posting at the same time |
+| `BROWSER_PATH` | auto | Chrome / Edge / Chromium used for logins and posting (Docker: Chromium) |
+| `SOCIAL_KEEPALIVE_HOURS` / `SOCIAL_KEEPALIVE_DWELL_SEC` | `6` / `20` | How often saved logins are refreshed (`0` = off) and for how long |
+| `EXT_STALE_MIN` | `15` | An extension upload that stops reporting this long is marked failed |
+| `PUBLISHED_TTL_HOURS` | `24` | Clips marked published are deleted after this long |
+| `DATA_DIR` | `./data` (`/data` in Docker) | Database, clips, browser profiles |
+| `FFMPEG_PATH` / `FONT_FILE` | `ffmpeg` / DejaVu Sans Bold | Server-side rendering |
+
 ## Notes & limitations
 
 - In **Browser** mode keep at least one app tab/window open while watching. In **Server** mode nothing needs to stay open; the server needs CPU for rendering (about 15-30 s per clip with native ffmpeg, plus transcription) and clips are processed one at a time. Limits: `MAX_SERVER_STREAMERS` per user (default 10) and `MAX_SERVER_WATCHERS` in total (default 50).
 - Browser mode: Chrome/Edge (desktop) recommended. A 30 s 720p clip takes roughly 1.5–2 minutes (transcription + render) on a typical laptop.
 - During Twitch **ad breaks** anonymous viewers receive ads instead of the stream; those seconds can't be clipped. Setting `TWITCH_AUTH_TOKEN` to a Turbo/subscriber account's token avoids this.
-- Publishing uses each platform's official API, so the platform rules above apply (app review / audit for public posting, Instagram Professional accounts, YouTube quota). Failed uploads are retried 3 times and shown in red on the calendar.
+- Posting drives each platform's own web uploader (YouTube Studio, TikTok Studio, Instagram), so no developer app or API quota is involved. When a platform changes its page, a step can break; the failure screenshot (server posts) or the failed Studio tab left open (extension posts) shows where. Failed uploads are retried up to 3 times and shown in red on the calendar.
 - Auto-publish plans 7 days ahead; slots beyond that fill in as new clips arrive. A clip is never auto-posted twice to the same platform, and unscheduling a planned post keeps that clip off that platform's plan.
 - Respect streamers' rights and each platform's terms when re-posting content.
 
@@ -178,9 +241,24 @@ The speech model (~100 MB, `onnx-community/whisper-base_timestamped`) is downloa
 ```bash
 npm install
 npm run dev        # http://localhost:8080 — loads .env if present, restarts when server/ or public/js/engine/ change
-npm test           # analyzer, HLS parser, chat parser, API tests
+npm test           # engine, API, publisher, real-browser posting and Chrome-extension tests
 ```
 
 Requires Node ≥ 22.13 (uses the built-in `node:sqlite`). `DATA_DIR` defaults to `./data`; set it to point the dev server at another data folder. Front-end files are served uncached, so a browser reload picks up CSS/JS edits without a restart. Server-side watching needs `ffmpeg` on the PATH (the Docker image includes it).
+
+The browser-posting test drives an installed Chrome, Edge or Chromium against a fake platform site. The extension test loads `extension/` into a Chromium build (branded Chrome ignores `--load-extension`): it uses Playwright's Chromium if installed (`npx playwright install chromium`) or `CHROMIUM_PATH`, and is skipped otherwise.
+
+Project layout:
+
+```
+server/            Express API, SQLite (node:sqlite), publisher + planner, admin, backups
+server/social/     server-browser posting: profiles, live viewer, YouTube / TikTok / Instagram drivers
+server/watch/      server-side watching and rendering ("Run on server")
+server/extension.js  API for the Chrome extension (/api/ext) and /extension.zip
+public/            the web app (no build step); public/js/engine/ = watcher, analyzer, HLS, render, transcribe
+extension/         SlientClip Publisher Chrome extension (Manifest V3)
+test/              node:test suites
+public/img/        landing-page and README screenshots
+```
 
 The UI is responsive: on phones the tabs scroll sideways, clips show two per row, the clip editor opens full screen, the calendar collapses to one column, and the admin table turns into cards.

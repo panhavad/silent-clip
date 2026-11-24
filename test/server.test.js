@@ -244,3 +244,12 @@ test('sign-in sessions slide forward instead of expiring', async () => {
   // Renewed at most once a day: an immediate second visit doesn't rewrite the cookie.
   assert.equal((await fetch(`${base}/api/me`, { headers: { cookie } })).headers.get('set-cookie'), null);
 });
+
+test('"/" shows the product page to visitors and the app once signed in', async () => {
+  const page = async (headers = {}) => (await fetch(`${base}/`, { headers })).text();
+  const visitor = await page();
+  assert.match(visitor, /<link rel="stylesheet" href="\/css\/landing\.css">/);
+  assert.match(visitor, /href="\/login\.html\?signup=1"/, 'sign-up call to action');
+  assert.ok(cookie, 'an earlier test signed in');
+  assert.match(await page({ cookie }), /<title>SlientClip - viral Twitch moments to Shorts<\/title>/);
+});

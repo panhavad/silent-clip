@@ -14,17 +14,20 @@ export function mountStreamerSearch(root, { isAdded, onAdd }) {
   const state = { mode: 'name', q: { name: '', category: '' }, category: null, language: '', seq: 0, results: [] };
   root.innerHTML = `
     <div class="section-head">
-      <div><h2 style="margin:0">Find streamers</h2>
-        <div class="muted small">Search Twitch by channel name, or pick a category to see who's live in it right now. Add anyone with one click.</div></div>
+      <div class="find-title" role="button" tabindex="0" title="Show or hide Find streamers"><h2 style="margin:0">Find streamers</h2>
+        <div class="muted small find-desc">Search Twitch by channel name, or pick a category to see who's live in it right now. Add anyone with one click.</div></div>
       <span class="spacer"></span>
       <div class="seg find-mode"><button data-m="name">${icon('search')}By name</button><button data-m="category">${icon('grid')}By category</button></div>
+      <button class="btn sm ghost find-toggle" aria-expanded="true">${icon('chevron-right')}<span>Hide</span></button>
     </div>
-    <div class="row find-controls">
-      <input type="search" class="find-q" autocomplete="off" spellcheck="false">
-      <select class="find-lang hidden" title="Only channels streaming in this language">${LANGUAGES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
-    </div>
-    <div class="find-crumb hidden"></div>
-    <div class="find-results"></div>`;
+    <div class="find-body">
+      <div class="row find-controls">
+        <input type="search" class="find-q" autocomplete="off" spellcheck="false">
+        <select class="find-lang hidden" title="Only channels streaming in this language">${LANGUAGES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+      </div>
+      <div class="find-crumb hidden"></div>
+      <div class="find-results"></div>
+    </div>`;
   const $ = (s) => root.querySelector(s);
   const input = $('.find-q');
   const results = $('.find-results');
@@ -154,6 +157,25 @@ export function mountStreamerSearch(root, { isAdded, onAdd }) {
       b.innerHTML = added ? `${icon('check')}Added` : `${icon('plus')}Add`;
     });
   }
+
+  // Collapsed or expanded, remembered on this device.
+  const COLLAPSED_KEY = 'sc.findStreamersCollapsed';
+  function setCollapsed(collapsed, { focus = false } = {}) {
+    root.classList.toggle('collapsed', collapsed);
+    const t = $('.find-toggle');
+    t.setAttribute('aria-expanded', String(!collapsed));
+    t.querySelector('span').textContent = collapsed ? 'Show' : 'Hide';
+    t.title = collapsed ? 'Show Find streamers' : 'Hide Find streamers';
+    try { localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* private mode */ }
+    if (!collapsed && focus) input.focus();
+  }
+  const toggle = () => setCollapsed(!root.classList.contains('collapsed'), { focus: true });
+  $('.find-toggle').onclick = toggle;
+  $('.find-title').onclick = toggle;
+  $('.find-title').onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+  let startCollapsed = false;
+  try { startCollapsed = localStorage.getItem(COLLAPSED_KEY) === '1'; } catch { /* private mode */ }
+  setCollapsed(startCollapsed);
 
   setMode('name');
   return { sync };
