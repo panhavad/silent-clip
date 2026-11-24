@@ -63,8 +63,8 @@ export class AdminView {
       </div>
       <div class="panel">
         <div class="section-head"><div><h2 style="margin:0">Database backup</h2>
-          <div class="muted small">Downloads the whole database: accounts, settings, streamers, clip details, schedules and linked accounts. Clipped video files are not included.
-          Linked-account tokens stay encrypted and only work on a server with the same <code>APP_SECRET</code> (or <code>data/secret.key</code>).</div></div></div>
+          <div class="muted small">Downloads the whole database: accounts, settings, streamers, clip details and schedules. Clipped video files are not included.
+          Social-account logins are kept in the server's browser profiles (<code>data/browser</code>), not in the database, so users log in again after restoring on another server.</div></div></div>
         <div class="row wrap">
           <a class="btn primary" href="/api/admin/backup" download>${icon('database')}Download database backup</a>
           <label class="btn danger">${icon('upload')}Restore database<input type="file" accept=".db" class="restore-db" hidden></label>

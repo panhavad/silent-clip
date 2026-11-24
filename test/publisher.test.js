@@ -6,9 +6,9 @@ import path from 'node:path';
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'slientclip-pub-'));
 process.env.PUBLISH_DRY_RUN = 'true';
+process.env.BROWSER_DISABLED = 'true';
 const { default: app } = await import('../server/index.js');
 const { zonedTime, runDuePosts } = await import('../server/publisher.js');
-const { tiktok } = await import('../server/platforms/tiktok.js');
 
 const realFetch = globalThis.fetch;
 const server = app.listen(0);
@@ -38,14 +38,14 @@ test('zonedTime converts wall-clock time in a time zone to UTC', () => {
   assert.equal(zonedTime(2026, 1, 1, 9, 30, 'America/New_York'), Date.UTC(2026, 0, 1, 14, 30));
 });
 
-test('link account, post now, auto-plan and cancel (demo mode)', async () => {
+test('log in (demo), post now, auto-plan and cancel', async () => {
   await call('/api/auth/register', { method: 'POST', body: { email: 'p@b.co', password: 'password123' } });
 
   const notLinked = await call('/api/posts', { method: 'POST', body: { clipId: 'x', platform: 'tiktok' } });
   assert.equal(notLinked.status, 404);
 
-  const connect = await call('/connect/tiktok');
-  assert.equal(connect.status, 302);
+  const login = await call('/api/accounts/tiktok/login', { method: 'POST' });
+  assert.equal(login.data.loggedIn, true);
   const accounts = (await call('/api/accounts')).data.accounts;
   assert.equal(accounts.find((a) => a.platform === 'tiktok').connected, true);
   assert.equal(accounts.find((a) => a.platform === 'youtube').connected, false);
@@ -83,32 +83,4 @@ test('link account, post now, auto-plan and cancel (demo mode)', async () => {
   assert.deepEqual(after.map((p) => p.clipId), [mid.id]);
   assert.equal((await call('/api/clips')).data.clips.find((c) => c.id === mid.id).scheduled[0].platform, 'tiktok');
   assert.ok(high);
-});
-
-test('TikTok publish follows the Content Posting API upload protocol', async () => {
-  const file = path.join(os.tmpdir(), `tt-${Date.now()}.mp4`);
-  fs.writeFileSync(file, Buffer.alloc(1000));
-  const calls = [];
-  globalThis.fetch = async (url, opts = {}) => {
-    calls.push({ url: String(url), opts });
-    const ok = (data) => new Response(JSON.stringify(data), { status: 200 });
-    if (url.endsWith('/creator_info/query/')) return ok({ data: { privacy_level_options: ['SELF_ONLY', 'PUBLIC_TO_EVERYONE'] } });
-    if (url.endsWith('/post/publish/video/init/')) return ok({ data: { publish_id: 'pub1', upload_url: 'https://upload.example/u1' } });
-    if (url === 'https://upload.example/u1') return new Response('', { status: 201 });
-    if (url.endsWith('/status/fetch/')) return ok({ data: { status: 'PUBLISH_COMPLETE', publicaly_available_post_id: [777] } });
-    throw new Error(`unexpected ${url}`);
-  };
-  try {
-    const out = await tiktok.publish({ acc: { accessToken: 'tok', username: 'me' }, clip: { title: 'Wow', hashtags: ['#fyp'] }, file, pollMs: 1 });
-    assert.deepEqual(out, { externalId: '777', url: 'https://www.tiktok.com/@me/video/777' });
-    const init = JSON.parse(calls[1].opts.body);
-    assert.equal(init.post_info.privacy_level, 'PUBLIC_TO_EVERYONE');
-    assert.equal(init.post_info.title, 'Wow\n\n#fyp');
-    assert.deepEqual(init.source_info, { source: 'FILE_UPLOAD', video_size: 1000, chunk_size: 1000, total_chunk_count: 1 });
-    assert.equal(calls[2].opts.headers['Content-Range'], 'bytes 0-999/1000');
-    assert.equal(calls[0].opts.headers.Authorization, 'Bearer tok');
-  } finally {
-    globalThis.fetch = realFetch;
-    fs.rmSync(file, { force: true });
-  }
 });

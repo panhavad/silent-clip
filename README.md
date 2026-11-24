@@ -7,7 +7,7 @@ Each user chooses **where watching and clipping run**:
 - **Browser** (default): watching, chat analysis, cutting and 9:16 rendering run in the user's browser (Web Workers + ffmpeg.wasm). The server only stores the results.
 - **Server**: the same pipeline runs inside the server (native ffmpeg + Whisper on Node), so clipping continues after the user closes the web app or turns off their computer.
 
-The server also stores data (accounts, streamers, finished clips, schedules) and, for publishing, hands the finished MP4 to YouTube / TikTok / Instagram through each user's linked account, so scheduled posts go out even when nobody has the app open.
+The server also stores data (accounts, streamers, finished clips, schedules) and posts the finished MP4 to YouTube / TikTok / Instagram by driving a real, logged-in browser like a person would, so scheduled posts go out even when nobody has the app open.
 
 ## Features
 
@@ -23,7 +23,7 @@ The server also stores data (accounts, streamers, finished clips, schedules) and
 - **Every clip is captioned by default**: a hook headline, the top chat reaction bubble, and **spoken-word subtitles** transcribed in the browser with Whisper (transformers.js, WebGPU or WebAssembly) in the streamer's Twitch broadcast language
 - Auto-generated **title, description, viral point (score, reason, chat evidence) and hashtags**
 - Clip library with **New / Downloaded / Posted / Scheduled** tracking, editable metadata, editable subtitles + caption re-render, **Caption all clips** (adds subtitles to older clips) and download
-- **Connected accounts** — link YouTube, TikTok and Instagram once (official OAuth); then **Post now** or **Schedule** any clip and the server uploads it for you
+- **Social accounts without API keys**: log in to YouTube, TikTok and Instagram once through a live view of the server's browser. Then **Post now** or **Schedule** any clip, and the server's browser uploads it like a person would, in the background with a success/failure report or in the foreground where you can watch it.
 - **Auto-publish** — choose posting times and days per platform (e.g. TikTok 11:00 / 16:00 / 20:00) plus a minimum viral score; the planner fills upcoming slots with your best unposted clips and publishes them automatically
 - **Schedule calendar** (week / month) — every scheduled, published and failed post, open slots, drag-and-drop rescheduling, post now / retry / unschedule
 - `docker compose` deployment with an **auto-updater** that redeploys on every `git push` to your private GitHub repo
@@ -38,9 +38,10 @@ Browser (per user)                                        Server (Node + SQLite)
 │  ├─ HLS buffer   → Twitch CDN segments (CORS) │         │ clips: mp4/jpg/source    │
 │  ├─ chat         → irc-ws.chat.twitch.tv      │         │ master-playlist relay*   │
 │  └─ analyzer     → viral moment               │         └──────────────────────────┘
-│ render.js (ffmpeg.wasm) → 9:16 mp4 + captions │──upload──► /api/clips │ publisher: OAuth tokens  │
-└───────────────────────────────────────────────┘         │  (AES-GCM), queue,       │
-                                                          │  auto-planner ──────────►│ YouTube / TikTok / IG APIs
+│ render.js (ffmpeg.wasm) → 9:16 mp4 + captions │──upload──► /api/clips │ publisher: queue +       │
+└───────────────────────────────────────────────┘         │  auto-planner            │
+                                                          │ Chromium (one profile per│
+                                                          │  user + platform) ──────►│ YouTube Studio / TikTok Studio / instagram.com
                                                           └──────────────────────────┘
 updater sidecar: GitHub push webhook / polling → git pull → docker compose up --build app
 ```
@@ -71,17 +72,26 @@ Put it behind HTTPS (Caddy, Nginx, Traefik, Cloudflare Tunnel…) for production
    GOOGLE_CALLBACK_URL=https://clips.example.com/auth/google/callback
    ```
 
-### Connected accounts (auto upload to YouTube / TikTok / Instagram)
+### Social accounts (posting to YouTube / TikTok / Instagram)
 
-Users link their channels under **Settings → Connected accounts**. Each platform needs a developer app whose keys go in `.env`; the redirect URI is always `https://<your host>/connect/<platform>/callback`. Tokens are encrypted at rest with `APP_SECRET` (or a generated key in the data volume) and refreshed automatically.
+There are **no developer apps, API keys or OAuth redirects** to set up. Posting works the way a person does it, in a real browser that runs on the server:
 
-| Platform | Where | `.env` | Notes |
-|---|---|---|---|
-| YouTube Shorts | Same Google OAuth client as sign-in + enable **YouTube Data API v3**; add redirect `…/connect/youtube/callback` | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `YOUTUBE_PRIVACY` | Uploads from unverified Google projects are private until the project passes Google's API audit. Default quota ≈ 6 uploads/day per project. |
-| TikTok | developers.tiktok.com → app with **Login Kit** + **Content Posting API** (scopes `video.publish`, `video.upload`, `user.info.basic`, `user.info.profile`) | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_POST_MODE` | Until TikTok audits the app, direct posts are visible only to the creator (SELF_ONLY). `TIKTOK_POST_MODE=inbox` sends the video to the creator's TikTok inbox as a draft instead. |
-| Instagram Reels | developers.facebook.com → app with **Instagram API with Instagram Login** (`instagram_business_basic`, `instagram_business_content_publish`) | `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET` | Needs a Professional (Business/Creator) account. With an `https` `PUBLIC_URL`, Instagram pulls the video from a signed, expiring `/media/…` link; otherwise it is pushed with the resumable upload API. |
+1. **Settings → Social accounts → Log in.** The server opens the platform's login page in its own Chrome/Chromium and streams it into the app. Click and type in that live view to sign in normally, including 2-step verification, then press **I'm logged in**. The session is saved in a browser profile per user and platform (`data/browser/<user>/<platform>`) and reused for every future post.
+2. **Post now / Schedule / Auto-publish.** For each post the server opens the platform's uploader (YouTube Studio, TikTok Studio, Instagram *Create*), picks the clip, types the title, caption and hashtags word by word with human-like pauses, sets visibility, and presses Post.
+3. **Results.** Each post shows its live step ("Uploading video", "Writing caption"…). Press **Watch** to see the browser at work. When it finishes you get a success or failure notification, including posts that finished while the app was closed. Failures keep a **screenshot** of what the browser showed.
 
-Set `PUBLISH_DRY_RUN=true` to try linking, posting, scheduling and auto-publish without any platform apps (everything is simulated and marked *Demo mode*).
+Settings per user: **background** (hidden browser, reports the result) or **foreground** (also opens a visible browser window, when the server machine has a screen), YouTube visibility (public / unlisted / private), and TikTok "who can watch" (everyone / friends / only me). If a private option can't be set, the post is stopped rather than published publicly.
+
+Safety rules:
+- Before every post the saved session is checked. If the platform logged it out, the post fails with "log in again" and the account is flagged in Settings.
+- A failure **before** pressing Post is retried automatically (up to 3 times). A failure **after** pressing Post is never retried, because the video may already be live. The same applies to posts interrupted by a server restart.
+- Only one browser runs per account at a time; `MAX_PUBLISH_BROWSERS` (default 2) limits browsers server-wide.
+
+If a platform refuses the login in an automated browser (Google sometimes shows "This browser or app may not be secure"), log in on your own browser, export that site's cookies with the *Cookie-Editor* extension (**Export → JSON**), and use the upload button next to the account to import them.
+
+Notes: the Docker image includes Chromium. `npm run dev` finds an installed Chrome or Edge, or you can set `BROWSER_PATH`. Platforms change their pages from time to time; when that breaks a step, the failure screenshot shows where. Automated posting may be against a platform's terms, so use your own accounts responsibly.
+
+Set `PUBLISH_DRY_RUN=true` to try posting, scheduling and auto-publish safely: logins still open the real browser, but posts are simulated and marked *Demo mode*.
 
 ### Auto-update on `git push` (private GitHub repo)
 
@@ -128,7 +138,7 @@ The running release is shown as a badge next to the logo (hover it for the commi
 
 - The first account ever created (or the account with `ADMIN_EMAIL`) is an active administrator. Everyone else who signs up (email or Google) is **pending** until an admin approves them; set `REQUIRE_APPROVAL=false` to skip approval.
 - **Admin → Accounts**: approve, disable / enable (signs the user out and stops their server watchers), create accounts (blank password = generated temporary password shown once), reset passwords, promote / demote admins, delete accounts with all their clips. The last active admin cannot be removed or demoted.
-- **Admin → Database backup** downloads a consistent SQLite copy (`VACUUM INTO`) of everything except the video files. **Restore** validates the file, swaps it in and restarts the server (Docker restarts the container). Linked-account tokens in a backup only work with the same `APP_SECRET` / `data/secret.key`.
+- **Admin → Database backup** downloads a consistent SQLite copy (`VACUUM INTO`) of everything except the video files. **Restore** validates the file, swaps it in and restarts the server (Docker restarts the container). Social-account logins live in the browser profiles under `data/browser/`, not in the database, so after restoring on another server users log in again.
 - **Settings → Backup & restore settings** (every user): JSON file with clipping settings, auto-publish schedule and streamers; restore merges or replaces the streamer list. Clips and linked-account tokens are not included.
 
 ### Settings

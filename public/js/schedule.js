@@ -1,5 +1,6 @@
 import { api, esc, toast } from './api.js';
 import { getAccounts, accountFor, PLATFORM_META } from './accounts.js';
+import { openBrowserViewer } from './browser-view.js';
 import { icon } from './icons.js';
 
 const DAY = 86400000;
@@ -81,13 +82,13 @@ export class ScheduleView {
     const perDay = Object.entries(s.platforms).filter(([p, c]) => c.enabled && accountFor(this.accounts, p)?.connected)
       .map(([p, c]) => `${c.times.length}× ${PLATFORM_META[p].short}`);
     $('.ap-sub').textContent = s.enabled
-      ? `Automatically fills these posting slots with your best new clips${perDay.length ? ` — up to ${perDay.join(', ')} per day` : ' — connect an account to start'}.`
+      ? `Automatically fills these posting slots with your best new clips${perDay.length ? ` — up to ${perDay.join(', ')} per day` : ' — log in to an account to start'}.`
       : 'Turn on to post clips automatically at the times below. You can still post or schedule manually from any clip.';
     $('.ap-platforms').innerHTML = Object.entries(s.platforms).map(([p, c]) => {
       const m = PLATFORM_META[p];
       const acc = accountFor(this.accounts, p);
       return `<div class="ap-row" data-p="${p}">
-        <div class="row" style="min-width:210px"><div class="plat-logo ${m.cls}">${m.icon}</div><div><b>${m.label}</b><div class="small ${acc?.connected ? 'muted' : ''}" style="${acc?.connected ? '' : 'color:var(--warn)'}">${acc?.connected ? `@${esc(acc.username || acc.displayName)}` : 'Not connected: <a href="#settings">connect</a>'}</div></div></div>
+        <div class="row" style="min-width:210px"><div class="plat-logo ${m.cls}">${m.icon}</div><div><b>${m.label}</b><div class="small ${acc?.connected ? 'muted' : ''}" style="${acc?.connected ? '' : 'color:var(--warn)'}">${acc?.connected ? esc(acc.username ? `@${acc.username}` : acc.displayName || 'logged in') : 'Not logged in: <a href="#settings">log in</a>'}</div></div></div>
         <label class="row small"><input type="checkbox" class="p-en" ${c.enabled ? 'checked' : ''}> Auto-post</label>
         <div class="row wrap times">${c.times.map((t) => `<span class="chip time">${t}<button title="Remove" data-t="${t}">×</button></span>`).join('')}
           <input type="time" class="add-time" style="width:110px"><button class="btn sm add-btn">${icon('plus')}time</button></div>
@@ -230,11 +231,13 @@ export class ScheduleView {
       <div class="row"><span class="plat ${p.platform}">${m.icon}</span><h3 style="margin:0">${m.label}</h3><span class="spacer"></span><button class="btn sm ghost x" title="Close">${icon('x')}</button></div>
       <div class="row" style="align-items:flex-start"><div class="thumb-mini lg" style="background-image:url('${p.clip?.thumbUrl || ''}')"></div>
         <div style="display:grid;gap:4px"><b>${esc(p.clip?.title || '')}</b><span class="small muted">${esc(p.clip?.streamer || '')} · ${icon('flame')}${p.clip?.score ?? '–'} · ${p.source === 'auto' ? 'auto-scheduled' : 'manual'}</span>
-        <span class="small">${STATUS[p.status]} · ${new Date(p.publishedAt || p.scheduledAt).toLocaleString()}</span>
+        <span class="small">${STATUS[p.status]} · ${p.status === 'publishing' && p.step ? esc(p.step) : new Date(p.publishedAt || p.scheduledAt).toLocaleString()}</span>
         ${p.url ? `<a class="small" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}${icon('external')}</a>` : ''}
         ${p.error ? `<span class="small" style="color:var(--bad)">${esc(p.error)}</span>` : ''}</div></div>
+      ${p.screenshotUrl ? `<a href="${p.screenshotUrl}" target="_blank" rel="noopener" title="What the browser showed when it failed"><img src="${p.screenshotUrl}" alt="Browser screenshot at the failure" style="width:100%;border-radius:10px;border:1px solid var(--border)"></a>` : ''}
       ${p.status === 'scheduled' ? `<div class="row"><input type="datetime-local" class="when" value="${localInput(p.scheduledAt)}"><button class="btn sm resched">Reschedule</button></div>` : ''}
       <div class="row wrap">
+        ${p.sessionId ? `<button class="btn sm primary watch">${icon('eye')}Watch</button>` : ''}
         ${p.status === 'scheduled' ? `<button class="btn sm primary now">${icon('upload')}Post now</button>` : ''}
         ${p.status === 'failed' ? `<button class="btn sm primary retry">${icon('refresh')}Retry</button>` : ''}
         <button class="btn sm open">Open clip</button><span class="spacer"></span>
@@ -246,6 +249,7 @@ export class ScheduleView {
     back.onclick = (e) => { if (e.target === back) close(); };
     q('.x').onclick = close;
     q('.open').onclick = () => { back.remove(); this.onOpenClip(p.clipId); };
+    if (q('.watch')) q('.watch').onclick = () => openBrowserViewer({ sessionId: p.sessionId, mode: 'watch', title: `Posting to ${m.label}` });
     const act = async (fn, msg) => { try { await fn(); toast(msg, 'ok'); close(); } catch (e) { toast(e.message, 'error'); } };
     if (q('.resched')) q('.resched').onclick = () => act(() => api(`/api/posts/${p.id}`, { method: 'PATCH', body: { scheduledAt: new Date(q('.when').value).getTime() } }), 'Rescheduled');
     if (q('.now')) q('.now').onclick = () => act(() => api(`/api/posts/${p.id}`, { method: 'PATCH', body: { scheduledAt: Date.now() } }), 'Publishing now…');

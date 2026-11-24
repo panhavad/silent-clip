@@ -1,19 +1,17 @@
-// Linked social accounts + publishing queue + auto-publish planner.
-// Publishing only transfers the already-rendered MP4 to the platform; no video processing here.
+// Publishing queue + auto-publish planner. Each post is performed by a real, logged-in browser
+// (see server/social/) — the server opens the platform's upload page and posts like a person would.
 import express from 'express';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { db, CLIPS_DIR, userSettings } from './db.js';
-import { encrypt, decrypt, sign } from './secrets.js';
-import { parseCookies } from './auth.js';
-import { youtube } from './platforms/youtube.js';
-import { tiktok } from './platforms/tiktok.js';
-import { instagram } from './platforms/instagram.js';
-import { sleep } from './platforms/http.js';
+import { DRIVERS, connectedPlatforms, getAccount, publishWithBrowser, saveShot, SHOTS_DIR } from './social/index.js';
+import { sleep } from './social/human.js';
 
-export const PLATFORMS = { youtube, tiktok, instagram };
+export const PLATFORMS = DRIVERS;
 const dryRun = () => process.env.PUBLISH_DRY_RUN === 'true';
 const json = (s, fb) => { try { return JSON.parse(s); } catch { return fb; } };
+const MAX_BROWSERS = Math.max(1, Number(process.env.MAX_PUBLISH_BROWSERS || 2));
 
 // ---------- time zones ----------
 function tzOffsetMin(ts, tz) {
@@ -78,45 +76,16 @@ export function sanitizeAutopublish(body, current) {
   return out;
 }
 
-// ---------- accounts ----------
-function accountRow(r) {
-  if (!r) return null;
-  return {
-    id: r.id, userId: r.user_id, platform: r.platform, externalId: r.external_id, username: r.username, displayName: r.display_name,
-    avatar: r.avatar, accessToken: decrypt(r.access_token), refreshToken: decrypt(r.refresh_token), expiresAt: r.expires_at,
-  };
-}
-
-export function saveAccount(userId, platform, a) {
-  const now = Date.now();
-  db.prepare(`INSERT INTO accounts (user_id, platform, external_id, username, display_name, avatar, access_token, refresh_token, expires_at, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(user_id, platform) DO UPDATE SET external_id = excluded.external_id, username = excluded.username,
-                display_name = excluded.display_name, avatar = excluded.avatar, access_token = excluded.access_token,
-                refresh_token = COALESCE(excluded.refresh_token, refresh_token), expires_at = excluded.expires_at, updated_at = excluded.updated_at`)
-    .run(userId, platform, a.externalId || null, a.username || null, a.displayName || null, a.avatar || null,
-      encrypt(a.accessToken), encrypt(a.refreshToken), a.expiresAt || null, now, now);
-}
-
-async function freshAccount(userId, platform) {
-  const acc = accountRow(db.prepare('SELECT * FROM accounts WHERE user_id = ? AND platform = ?').get(userId, platform));
-  if (!acc) return null;
-  const p = PLATFORMS[platform];
-  const margin = p.refreshBeforeMs || 5 * 60 * 1000;
-  if (!dryRun() && acc.expiresAt && acc.expiresAt - Date.now() < margin && (acc.refreshToken || platform === 'instagram')) {
-    const t = await p.refresh(acc);
-    db.prepare('UPDATE accounts SET access_token = ?, refresh_token = COALESCE(?, refresh_token), expires_at = ?, updated_at = ? WHERE id = ?')
-      .run(encrypt(t.accessToken), encrypt(t.refreshToken), t.expiresAt, Date.now(), acc.id);
-    Object.assign(acc, t);
-  }
-  return acc;
-}
-
 // ---------- posts ----------
+const liveByPost = new Map(); // postId -> { sessionId, step }
+
 function postRow(r) {
+  const live = liveByPost.get(r.id);
   return {
     id: r.id, clipId: r.clip_id, platform: r.platform, scheduledAt: r.scheduled_at, status: r.status, source: r.source,
     attempts: r.attempts, error: r.error, url: r.url, publishedAt: r.published_at,
+    step: live?.step || r.step || null, sessionId: live?.sessionId || null,
+    screenshotUrl: r.shot ? `/api/posts/${r.id}/screenshot` : null,
     clip: r.title !== undefined ? {
       title: r.title, streamer: r.streamer_login, score: json(r.viral, {}).score ?? null,
       thumbUrl: r.thumb_file ? `/api/clips/${r.clip_id}/thumb` : null,
@@ -131,49 +100,59 @@ export function createPost(userId, clipId, platform, scheduledAt = Date.now(), s
   return id;
 }
 
-function publicVideoUrl(clipId) {
-  const base = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
-  if (!/^https:\/\//.test(base) || /localhost|127\.0\.0\.1/.test(base)) return null;
-  const exp = Date.now() + 2 * 3600 * 1000;
-  return `${base}/media/${clipId}.mp4?exp=${exp}&sig=${sign(`${clipId}.${exp}`)}`;
-}
-
-async function demoPublish(platform, clipId) {
-  await sleep(1500);
+async function demoPublish(platform, clipId, step) {
+  for (const s of ['Opening the uploader (demo)', 'Uploading video (demo)', 'Writing caption (demo)', 'Posting (demo)']) { step(s); await sleep(400); }
   const id = `demo${clipId.slice(0, 8)}`;
   const url = { youtube: `https://www.youtube.com/shorts/${id}`, tiktok: `https://www.tiktok.com/@demo/video/${id}`, instagram: `https://www.instagram.com/reel/${id}/` }[platform];
   return { externalId: id, url };
 }
 
 const inFlight = new Set();
+const busyProfiles = new Set();
 
 async function publishOne(post) {
   inFlight.add(post.id);
-  db.prepare("UPDATE posts SET status = 'publishing', attempts = attempts + 1 WHERE id = ?").run(post.id);
+  const profile = `${post.user_id}:${post.platform}`;
+  busyProfiles.add(profile);
+  const live = { sessionId: null, step: 'Starting' };
+  liveByPost.set(post.id, live);
+  db.prepare("UPDATE posts SET status = 'publishing', attempts = attempts + 1, step = ?, shot = 0 WHERE id = ?").run(live.step, post.id);
+  const step = (t) => { live.step = t; db.prepare('UPDATE posts SET step = ? WHERE id = ?').run(t, post.id); };
   try {
     const clipRow = db.prepare('SELECT * FROM clips WHERE id = ?').get(post.clip_id);
-    if (!clipRow) throw new Error('Clip was deleted');
-    const acc = await freshAccount(post.user_id, post.platform);
-    if (!acc) throw Object.assign(new Error(`${PLATFORMS[post.platform].label} account is not connected`), { final: true });
+    if (!clipRow) throw Object.assign(new Error('Clip was deleted'), { final: true });
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(post.user_id);
+    const acc = getAccount(post.user_id, post.platform);
+    if (!acc?.loggedIn) throw Object.assign(new Error(`Not logged in to ${PLATFORMS[post.platform].label}. Log in under Settings → Social accounts.`), { final: true });
     const clip = { title: clipRow.title, description: clipRow.description, hashtags: json(clipRow.hashtags, []) };
     const file = path.join(CLIPS_DIR, String(post.user_id), clipRow.video_file);
-    const result = dryRun()
-      ? await demoPublish(post.platform, post.clip_id)
-      : await PLATFORMS[post.platform].publish({ acc, clip, file, publicUrl: post.platform === 'instagram' ? publicVideoUrl(post.clip_id) : null });
+    if (!fs.existsSync(file)) throw Object.assign(new Error('The clip video file is missing on the server'), { final: true });
+    const result = dryRun() || acc.demo
+      ? await demoPublish(post.platform, post.clip_id, step)
+      : await publishWithBrowser({ user, platform: post.platform, file, clip, onStep: step, onSession: (id) => { live.sessionId = id; } });
     const now = Date.now();
-    db.prepare("UPDATE posts SET status = 'published', url = ?, external_id = ?, published_at = ?, error = NULL WHERE id = ?")
-      .run(result.url || null, result.externalId || null, now, post.id);
+    db.prepare("UPDATE posts SET status = 'published', url = ?, external_id = ?, published_at = ?, finished_at = ?, error = NULL, step = 'Posted' WHERE id = ?")
+      .run(result.url || null, result.externalId || null, now, now, post.id);
     const posted = json(clipRow.posted, {});
     posted[post.platform] = { at: now, url: result.url || null };
     db.prepare('UPDATE clips SET posted = ? WHERE id = ?').run(JSON.stringify(posted), clipRow.id);
   } catch (e) {
     const attempts = post.attempts + 1;
+    // A busy profile (user is logging in) doesn't count as a failed attempt.
+    if (e.busy) {
+      db.prepare("UPDATE posts SET status = 'scheduled', attempts = attempts - 1, scheduled_at = ?, step = ? WHERE id = ?").run(Date.now() + 60000, 'Waiting: the account browser is in use', post.id);
+      return;
+    }
     const retry = !e.final && attempts < 3;
-    db.prepare('UPDATE posts SET status = ?, scheduled_at = ?, error = ? WHERE id = ?')
-      .run(retry ? 'scheduled' : 'failed', retry ? Date.now() + attempts * 5 * 60000 : post.scheduled_at, String(e.message || e).slice(0, 500), post.id);
+    const shot = saveShot(post.id, e.screenshot) ? 1 : 0;
+    db.prepare('UPDATE posts SET status = ?, scheduled_at = ?, error = ?, shot = ?, step = ?, finished_at = ? WHERE id = ?')
+      .run(retry ? 'scheduled' : 'failed', retry ? Date.now() + attempts * 5 * 60000 : post.scheduled_at,
+        `${String(e.message || e).slice(0, 480)}${retry ? ` (retrying, attempt ${attempts}/3)` : ''}`, shot, live.step, Date.now(), post.id);
     console.error(`publish ${post.platform} ${post.id} failed:`, e.message);
   } finally {
     inFlight.delete(post.id);
+    busyProfiles.delete(profile);
+    liveByPost.delete(post.id);
   }
 }
 
@@ -182,9 +161,17 @@ export async function runDuePosts({ wait = false } = {}) {
   if (ticking) return;
   ticking = true;
   try {
-    const due = db.prepare("SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at LIMIT 10").all(Date.now())
-      .filter((p) => !inFlight.has(p.id)).slice(0, Math.max(0, 3 - inFlight.size));
-    const jobs = due.map((p) => publishOne(p));
+    const due = db.prepare("SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at LIMIT 20").all(Date.now());
+    const jobs = [];
+    const claimed = new Set(busyProfiles);
+    for (const p of due) {
+      if (inFlight.size + jobs.length >= MAX_BROWSERS) break;
+      const profile = `${p.user_id}:${p.platform}`;
+      // One browser per account at a time; the next post for it waits for the following tick.
+      if (inFlight.has(p.id) || claimed.has(profile)) continue;
+      claimed.add(profile);
+      jobs.push(publishOne(p));
+    }
     if (wait) await Promise.all(jobs);
   } finally {
     ticking = false;
@@ -201,7 +188,7 @@ export function planUser(userId, now = Date.now()) {
     db.prepare("DELETE FROM posts WHERE user_id = ? AND source = 'auto' AND status = 'scheduled' AND scheduled_at > ?").run(userId, now);
     return 0;
   }
-  const connected = new Set(db.prepare('SELECT platform FROM accounts WHERE user_id = ?').all(userId).map((r) => r.platform));
+  const connected = new Set(connectedPlatforms(userId));
   const clips = db.prepare('SELECT id, viral, posted, created_at FROM clips WHERE user_id = ? AND created_at >= ?')
     .all(userId, now - ap.maxAgeHours * 3600 * 1000)
     .map((c) => ({ id: c.id, score: json(c.viral, {}).score ?? 0, posted: json(c.posted, {}), createdAt: c.created_at }))
@@ -237,7 +224,8 @@ export function planAll() {
 }
 
 export function startScheduler() {
-  db.prepare("UPDATE posts SET status = 'scheduled' WHERE status = 'publishing'").run();
+  // The browser may already have pressed Post before the restart, so don't repeat it blindly.
+  db.prepare("UPDATE posts SET status = 'failed', finished_at = ?, error = 'Interrupted by a server restart. Check the platform, then press Retry if it was not posted.' WHERE status = 'publishing'").run(Date.now());
   setInterval(() => runDuePosts().catch((e) => console.error('publisher', e)), 20000).unref();
   setInterval(planAll, 5 * 60000).unref();
   planAll();
@@ -246,71 +234,6 @@ export function startScheduler() {
 
 // ---------- HTTP routes ----------
 export const router = express.Router();
-
-const baseUrl = (req) => (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
-const redirectUri = (req, platform) => `${baseUrl(req)}/connect/${platform}/callback`;
-
-router.get('/connect/:platform', (req, res) => {
-  const p = PLATFORMS[req.params.platform];
-  if (!p) return res.status(404).send('Unknown platform');
-  if (!req.user) return res.redirect(`/login.html?next=${encodeURIComponent('/#settings')}`);
-  if (dryRun()) {
-    saveAccount(req.user.id, p.id, {
-      externalId: `demo-${p.id}`, username: `demo_${p.id}`, displayName: `Demo ${p.label}`, avatar: null,
-      accessToken: 'demo', refreshToken: 'demo', expiresAt: Date.now() + 365 * 86400000,
-    });
-    planUser(req.user.id);
-    return res.redirect(`/?connected=${p.id}#settings`);
-  }
-  if (!p.configured()) return res.redirect(`/?connectError=${encodeURIComponent(`${p.label} is not configured on this server`)}#settings`);
-  const state = crypto.randomBytes(16).toString('hex');
-  res.cookie(`sc_connect_${p.id}`, state, { httpOnly: true, sameSite: 'lax', maxAge: 600000, secure: baseUrl(req).startsWith('https://') });
-  res.redirect(p.authUrl(state, redirectUri(req, p.id)));
-});
-
-router.get('/connect/:platform/callback', async (req, res) => {
-  const p = PLATFORMS[req.params.platform];
-  if (!p || !req.user) return res.redirect('/login.html');
-  try {
-    if (req.query.error) throw new Error(String(req.query.error_description || req.query.error));
-    if (!req.query.state || req.query.state !== parseCookies(req)[`sc_connect_${p.id}`]) throw new Error('Invalid OAuth state, please try again');
-    saveAccount(req.user.id, p.id, await p.exchange(String(req.query.code), redirectUri(req, p.id)));
-    res.clearCookie(`sc_connect_${p.id}`);
-    planUser(req.user.id);
-    res.redirect(`/?connected=${p.id}#settings`);
-  } catch (e) {
-    res.redirect(`/?connectError=${encodeURIComponent(e.message)}#settings`);
-  }
-});
-
-// Signed, expiring public link so Instagram can pull the video file.
-router.get('/media/:id.mp4', (req, res) => {
-  const { exp, sig } = req.query;
-  if (!exp || Number(exp) < Date.now() || sig !== sign(`${req.params.id}.${exp}`)) return res.status(403).end();
-  const r = db.prepare('SELECT user_id, video_file FROM clips WHERE id = ?').get(req.params.id);
-  if (!r) return res.status(404).end();
-  res.sendFile(path.join(CLIPS_DIR, String(r.user_id), r.video_file), { headers: { 'Content-Type': 'video/mp4' } });
-});
-
-router.get('/api/accounts', (req, res) => {
-  const rows = db.prepare('SELECT platform, username, display_name, avatar, expires_at, updated_at FROM accounts WHERE user_id = ?').all(req.user.id);
-  res.json({
-    demo: dryRun(),
-    accounts: Object.values(PLATFORMS).map((p) => {
-      const r = rows.find((x) => x.platform === p.id);
-      return {
-        platform: p.id, label: p.label, configured: dryRun() || p.configured(), connected: Boolean(r),
-        username: r?.username || null, displayName: r?.display_name || null, avatar: r?.avatar || null, connectedAt: r?.updated_at || null,
-      };
-    }),
-  });
-});
-
-router.delete('/api/accounts/:platform', (req, res) => {
-  db.prepare('DELETE FROM accounts WHERE user_id = ? AND platform = ?').run(req.user.id, req.params.platform);
-  db.prepare("DELETE FROM posts WHERE user_id = ? AND platform = ? AND status = 'scheduled' AND source = 'auto'").run(req.user.id, req.params.platform);
-  res.json({ ok: true });
-});
 
 router.get('/api/autopublish', (req, res) => res.json(autopublishSettings(req.user)));
 
@@ -339,8 +262,8 @@ router.post('/api/posts', (req, res) => {
   const { clipId, platform } = req.body || {};
   if (!PLATFORMS[platform]) return res.status(400).json({ error: 'Unknown platform' });
   if (!db.prepare('SELECT 1 FROM clips WHERE id = ? AND user_id = ?').get(clipId, req.user.id)) return res.status(404).json({ error: 'Clip not found' });
-  if (!db.prepare('SELECT 1 FROM accounts WHERE user_id = ? AND platform = ?').get(req.user.id, platform)) {
-    return res.status(400).json({ error: `Connect your ${PLATFORMS[platform].label} account first (Settings → Connected accounts)` });
+  if (!connectedPlatforms(req.user.id).includes(platform)) {
+    return res.status(400).json({ error: `Log in to ${PLATFORMS[platform].label} first (Settings → Social accounts)` });
   }
   const at = req.body.scheduledAt ? Number(new Date(req.body.scheduledAt)) : Date.now();
   if (!Number.isFinite(at)) return res.status(400).json({ error: 'Invalid time' });
@@ -352,6 +275,24 @@ router.post('/api/posts', (req, res) => {
 });
 
 function ownPost(req) { return db.prepare('SELECT * FROM posts WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id); }
+
+// Attempts that finished since `since` (posted, failed, or failed-and-will-retry), so the app can report background results.
+router.get('/api/posts/results', (req, res) => {
+  const since = Number(req.query.since) || Date.now() - 60000;
+  const rows = db.prepare(`${postQuery} WHERE p.user_id = ? AND p.finished_at > ? AND p.status != 'canceled' ORDER BY p.finished_at`).all(req.user.id, since);
+  res.json(rows.map((r) => ({ ...postRow(r), finishedAt: r.finished_at })));
+});
+
+router.get('/api/posts/live', (req, res) => {
+  const rows = db.prepare(`${postQuery} WHERE p.user_id = ? AND p.status = 'publishing'`).all(req.user.id);
+  res.json(rows.map(postRow));
+});
+
+router.get('/api/posts/:id/screenshot', (req, res) => {
+  const p = ownPost(req);
+  if (!p?.shot) return res.status(404).end();
+  res.set('Cache-Control', 'no-store').sendFile(path.join(SHOTS_DIR, `${p.id}.jpg`));
+});
 
 router.patch('/api/posts/:id', (req, res) => {
   const p = ownPost(req);
@@ -367,7 +308,7 @@ router.patch('/api/posts/:id', (req, res) => {
 router.post('/api/posts/:id/retry', (req, res) => {
   const p = ownPost(req);
   if (!p) return res.status(404).json({ error: 'Not found' });
-  db.prepare("UPDATE posts SET status = 'scheduled', scheduled_at = ?, attempts = 0, error = NULL WHERE id = ?").run(Date.now(), p.id);
+  db.prepare("UPDATE posts SET status = 'scheduled', scheduled_at = ?, attempts = 0, error = NULL, shot = 0, step = NULL WHERE id = ?").run(Date.now(), p.id);
   runDuePosts();
   res.json({ ok: true });
 });

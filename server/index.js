@@ -10,6 +10,7 @@ import {
 } from './auth.js';
 import { masterPlaylist } from './twitch.js';
 import { router as publisher, startScheduler } from './publisher.js';
+import { router as socialRouter } from './social/index.js';
 import { router as admin } from './admin.js';
 import { router as backup } from './backup.js';
 import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
@@ -96,7 +97,8 @@ app.post('/api/auth/login', (req, res) => {
 app.post('/api/auth/logout', (req, res) => { destroySession(req, res); res.json({ ok: true }); });
 
 app.use('/api', requireUser);
-// Linked social accounts, publishing queue and auto-publish schedule (+ /connect/* OAuth and signed /media/* links).
+// Social accounts (logged-in browser sessions + live viewer), publishing queue and auto-publish schedule.
+app.use(socialRouter);
 app.use(publisher);
 app.use('/api/admin', admin);
 app.use(backup);
@@ -223,7 +225,7 @@ app.get('/api/clips/:id', (req, res) => {
 app.patch('/api/clips/:id', (req, res) => {
   const r = getClip(req);
   if (!r) return res.status(404).json({ error: 'Not found' });
-  const m = sanitizeMeta({ meta: JSON.stringify({ ...clipRow(r), ...req.body, streamer: r.streamer_login }) });
+  const m = sanitizeMeta({ ...clipRow(r), ...req.body, streamer: r.streamer_login });
   db.prepare('UPDATE clips SET title = ?, description = ?, hashtags = ?, caption = ? WHERE id = ?')
     .run(m.title, m.description, JSON.stringify(m.hashtags), m.caption, r.id);
   res.json(clipRow(getClip(req)));

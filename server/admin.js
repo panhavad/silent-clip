@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { db, CLIPS_DIR, RESTORE_FILE } from './db.js';
 import { hashPassword, requireAdmin } from './auth.js';
 import { stopUser } from './watch/manager.js';
+import { removeUserBrowserData } from './social/index.js';
 
 export const router = express.Router();
 router.use(requireAdmin);
@@ -88,12 +89,13 @@ router.post('/users/:id/reset-password', (req, res) => {
   res.json({ ok: true, password: req.body.password ? undefined : password });
 });
 
-router.delete('/users/:id', (req, res) => {
+router.delete('/users/:id', async (req, res) => {
   const u = getUser(req.params.id);
   if (!u) return res.status(404).json({ error: 'User not found' });
   if (u.id === req.user.id) return res.status(400).json({ error: 'You cannot delete your own account' });
   if (u.role === 'admin' && u.status === 'active' && activeAdmins() <= 1) return res.status(400).json({ error: 'At least one active administrator is required' });
   stopUser(u.id);
+  await removeUserBrowserData(u.id);
   db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
   fs.rmSync(path.join(CLIPS_DIR, String(u.id)), { recursive: true, force: true });
   res.json({ ok: true });

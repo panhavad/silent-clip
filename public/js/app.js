@@ -72,11 +72,33 @@ const schedule = new ScheduleView($('.schedule-root'), {
   onOpenClip: async (id) => library.open(await api(`/api/clips/${id}`)),
 });
 
-// Result of an OAuth "Connect account" round trip.
+// ---------- background posting results ----------
+// The server posts in a hidden browser; report each finished attempt (also ones that finished while the app was closed).
 {
-  const q = new URLSearchParams(location.search);
-  if (q.get('connected')) toast(`${q.get('connected')} account connected`, 'ok');
-  if (q.get('connectError')) toast(`Could not connect: ${q.get('connectError')}`, 'error');
+  const KEY = `sc-post-results-${me.id}`;
+  let since = Number(localStorage.getItem(KEY)) || Date.now();
+  const PLAT = { youtube: 'YouTube', tiktok: 'TikTok', instagram: 'Instagram' };
+  const report = async () => {
+    try {
+      const results = await api(`/api/posts/results?since=${since}`);
+      for (const p of results.slice(-5)) {
+        const title = p.clip?.title || 'clip';
+        const ok = p.status === 'published';
+        const msg = ok ? `Posted to ${PLAT[p.platform]}: ${title}` : `${PLAT[p.platform]} post failed: ${p.error || 'unknown error'}`;
+        toast(msg, ok ? 'ok' : 'error');
+        if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          new Notification(ok ? `Posted to ${PLAT[p.platform]}` : `${PLAT[p.platform]} post failed`, { body: ok ? title : `${title}: ${p.error || ''}`, icon: '/favicon.svg' });
+        }
+      }
+      if (results.length) {
+        since = Math.max(...results.map((p) => p.finishedAt));
+        localStorage.setItem(KEY, String(since));
+        if (!$('[data-view="schedule"]').classList.contains('hidden')) schedule.renderCalendar?.();
+      } else localStorage.setItem(KEY, String(since));
+    } catch { /* offline / restarting */ }
+  };
+  report();
+  setInterval(report, 15000);
 }
 
 // ---------- watchers: in this browser, or on the server ----------

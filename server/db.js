@@ -109,6 +109,12 @@ if (!userCols.has('role')) db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT N
 // Existing accounts stay active; new sign-ups are inserted as 'pending' until an admin approves them.
 if (!userCols.has('status')) db.exec("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
 if (!userCols.has('last_login_at')) db.exec('ALTER TABLE users ADD COLUMN last_login_at INTEGER');
+const postCols = new Set(db.prepare('PRAGMA table_info(posts)').all().map((c) => c.name));
+if (!postCols.has('step')) db.exec('ALTER TABLE posts ADD COLUMN step TEXT');
+if (!postCols.has('shot')) db.exec('ALTER TABLE posts ADD COLUMN shot INTEGER NOT NULL DEFAULT 0');
+if (!postCols.has('finished_at')) db.exec('ALTER TABLE posts ADD COLUMN finished_at INTEGER');
+// Accounts used to be OAuth tokens; posting now uses logged-in browser sessions, so old token links are dropped.
+db.prepare('DELETE FROM accounts WHERE access_token IS NOT NULL OR refresh_token IS NOT NULL').run();
 if (!db.prepare("SELECT 1 FROM users WHERE role = 'admin'").get()) {
   db.prepare("UPDATE users SET role = 'admin', status = 'active' WHERE id = (SELECT MIN(id) FROM users)").run();
 }
@@ -142,11 +148,15 @@ export const DEFAULT_SETTINGS = {
   keepSource: true,
   processing: 'browser',       // browser | server  (where watching + clipping runs)
   serverRunning: false,        // server mode: watchers are on (survives restarts)
+  publishView: 'background',   // background (hidden browser, reports result) | foreground (show the posting browser window)
+  youtubeVisibility: 'public', // public | unlisted | private
+  tiktokPrivacy: 'everyone',   // everyone | friends | only_me
 };
 
 const ENUMS = {
   mode: ['background', 'foreground'], windowLayout: ['per-streamer', 'grid'], layout: ['blur', 'crop'],
   resolution: ['720x1280', '1080x1920', '540x960'], processing: ['browser', 'server'],
+  publishView: ['background', 'foreground'], youtubeVisibility: ['public', 'unlisted', 'private'], tiktokPrivacy: ['everyone', 'friends', 'only_me'],
 };
 
 /** Validate + persist a partial settings object; nested `autopublish` is kept as-is. */

@@ -57,6 +57,14 @@ test('auth, streamers and clip lifecycle with new/downloaded/posted tracking', a
   assert.equal(up.data.isNew, true);
   const id = up.data.id;
 
+  // Editing details keeps everything not sent (e.g. the hashtags when only the title changes).
+  const edited = await call(`/api/clips/${id}`, { method: 'PATCH', body: { title: 'Bigger moment', description: 'What a play' } });
+  assert.equal(edited.data.title, 'Bigger moment');
+  assert.equal(edited.data.description, 'What a play');
+  assert.deepEqual(edited.data.hashtags, ['#shorts', '#twitch']);
+  await call(`/api/clips/${id}`, { method: 'PATCH', body: { title: 'Big moment' } });
+  assert.equal((await call(`/api/clips/${id}`)).data.description, 'What a play');
+
   let list = await call('/api/clips?filter=new');
   assert.equal(list.data.counts.new, 1);
 

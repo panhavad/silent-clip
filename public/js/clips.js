@@ -1,6 +1,7 @@
 import { api, esc, toast, timeAgo } from './api.js';
 import { shareClip, postText, UPLOAD_PAGES } from './publish.js';
-import { getAccounts, accountFor, PLATFORM_META } from './accounts.js';
+import { getAccounts, accountFor, PLATFORM_META, loginTo } from './accounts.js';
+import { openBrowserViewer } from './browser-view.js';
 import { icon } from './icons.js';
 import { renderClip } from './engine/render.js';
 import { autoSubtitles, phrasesToText, textToPhrases } from './engine/transcribe.js';
@@ -272,9 +273,10 @@ export class ClipLibrary {
       panel.classList.remove('hidden');
       if (!acc?.connected) {
         panel.innerHTML = `<h3>${label}</h3>
-          <p class="small muted" style="margin:6px 0 10px">Link your ${label} account once and SlientClip will upload clips for you — instantly, on a schedule, or automatically.</p>
-          <div class="row wrap">${acc?.configured ? `<a class="btn primary" href="/connect/${platform}">${icon('link')}Connect ${label}</a>` : `<span class="small" style="color:var(--warn)">${label} isn't configured on this server yet (app keys missing in .env).</span>`}
+          <p class="small muted" style="margin:6px 0 10px">${acc?.known ? `Your ${label} session has expired.` : `Log in to ${label} once.`} SlientClip then posts for you in a real browser: instantly, on a schedule, or automatically.</p>
+          <div class="row wrap"><button class="btn primary login">${icon('login')}Log in to ${label}</button>
           <a href="#" class="small manual">or post manually</a></div>`;
+        panel.querySelector('.login').onclick = () => loginTo(platform, () => publishPanel(platform)).catch((err) => toast(err.message, 'error'));
         panel.querySelector('.manual').onclick = (e) => { e.preventDefault(); assisted(platform); };
         return;
       }
@@ -282,26 +284,36 @@ export class ClipLibrary {
       inHour.setMinutes(0, 0, 0);
       const pad = (n) => String(n).padStart(2, '0');
       const local = `${inHour.getFullYear()}-${pad(inHour.getMonth() + 1)}-${pad(inHour.getDate())}T${pad(inHour.getHours())}:00`;
-      panel.innerHTML = `<div class="row"><h3 style="margin:0">${label}</h3><span class="small muted">as @${esc(acc.username || acc.displayName)}</span>${accounts.demo ? '<span class="badge elsewhere">demo</span>' : ''}</div>
+      panel.innerHTML = `<div class="row"><h3 style="margin:0">${label}</h3><span class="small muted">${acc.username || acc.displayName ? `as ${acc.username ? '@' : ''}${esc(acc.username || acc.displayName)}` : 'logged in'}</span>${accounts.demo || acc.demo ? '<span class="badge elsewhere">demo</span>' : ''}</div>
         <div class="row wrap" style="margin:10px 0">
           <button class="btn primary now">${icon('upload')}Post now</button>
           <span class="muted small">or</span>
           <input type="datetime-local" class="when" value="${local}" style="width:auto"><button class="btn sched">${icon('calendar')}Schedule</button>
         </div>
         <div class="post-list"></div>
-        <div class="small muted" style="margin-top:6px">Uses the title + hashtags above. <a href="#" class="manual">Post manually instead</a></div>`;
+        <div class="small muted" style="margin-top:6px">A browser on the server posts the title + hashtags above, like a person would. <a href="#" class="manual">Post manually instead</a></div>`;
       panel.querySelector('.manual').onclick = (e) => { e.preventDefault(); assisted(platform); };
       const list = panel.querySelector('.post-list');
+      const watched = new Set();
+      let autoWatch = false;
+      const watch = (p) => openBrowserViewer({ sessionId: p.sessionId, mode: 'watch', title: `Posting to ${label}` });
       const refresh = async () => {
         const posts = (await api(`/api/posts?clipId=${clip.id}`)).filter((p) => p.platform === platform && p.status !== 'canceled');
         list.innerHTML = posts.map((p) => `<div class="item"><b>${STATUS[p.status]}</b>
-          <span class="muted">${new Date(p.publishedAt || p.scheduledAt).toLocaleString()}${p.source === 'auto' ? ' · auto' : ''}</span>
+          <span class="muted">${p.status === 'publishing' && p.step ? esc(p.step) : new Date(p.publishedAt || p.scheduledAt).toLocaleString()}${p.source === 'auto' ? ' · auto' : ''}</span>
           ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">open${icon('external')}</a>` : ''}
           ${p.error ? `<span style="color:var(--bad)">${esc(p.error)}</span>` : ''}<span class="spacer"></span>
+          ${p.sessionId ? `<button class="btn sm watch" data-id="${p.id}">${icon('eye')}Watch</button>` : ''}
+          ${p.screenshotUrl ? `<a class="btn sm ghost" href="${p.screenshotUrl}" target="_blank" rel="noopener" title="What the browser showed when it failed">${icon('image')}Screenshot</a>` : ''}
           ${p.status === 'scheduled' ? `<button class="btn sm ghost unsched" data-id="${p.id}" title="Unschedule">${icon('x')}</button>` : ''}
           ${p.status === 'failed' ? `<button class="btn sm retry" data-id="${p.id}">${icon('refresh')}Retry</button>` : ''}</div>`).join('');
+        list.querySelectorAll('.watch').forEach((b) => { b.onclick = () => watch(posts.find((p) => p.id === b.dataset.id)); });
         list.querySelectorAll('.unsched').forEach((b) => { b.onclick = async () => { await api(`/api/posts/${b.dataset.id}`, { method: 'DELETE' }); refresh(); }; });
         list.querySelectorAll('.retry').forEach((b) => { b.onclick = async () => { await api(`/api/posts/${b.dataset.id}/retry`, { method: 'POST' }); refresh(); }; });
+        // Foreground mode: show the posting browser as soon as it starts.
+        for (const p of posts) {
+          if (autoWatch && p.sessionId && !watched.has(p.id)) { watched.add(p.id); watch(p); }
+        }
         if (posts.some((p) => p.status === 'published')) { Object.assign(clip, await api(`/api/clips/${clip.id}`)); renderBadges(); }
         if (posts.some((p) => p.status === 'publishing' || (p.status === 'scheduled' && p.scheduledAt <= Date.now() + 60000)) && back.isConnected) {
           pollTimer = setTimeout(refresh, 2000);
@@ -311,7 +323,8 @@ export class ClipLibrary {
         try {
           await save();
           await api('/api/posts', { method: 'POST', body: { clipId: clip.id, platform, scheduledAt } });
-          toast(scheduledAt ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}` : `Uploading to ${label}…`, 'ok');
+          if (!scheduledAt) autoWatch = (await api('/api/me')).settings.publishView === 'foreground';
+          toast(scheduledAt ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}` : `Posting to ${label}. You'll be notified when it's done.`, 'ok');
           refresh();
         } catch (err) { toast(err.message, 'error'); }
       };
