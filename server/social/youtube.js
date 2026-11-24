@@ -10,7 +10,27 @@ export const youtube = {
   homeUrl: 'https://studio.youtube.com/',
   loggedOutUrl: /accounts\.google\.com|ServiceLogin/,
   hosts: ['youtube.com', 'google.com'],
-  sessionCookies: { urls: ['https://www.youtube.com'], names: ['LOGIN_INFO', 'SID', '__Secure-3PSID'] },
+  // LOGIN_INFO stays behind after Google ends a session, so only the Google session cookies count.
+  sessionCookies: { urls: ['https://www.youtube.com'], names: ['SID', '__Secure-3PSID'] },
+
+  /** YouTube's own answer (ytcfg LOGGED_IN): true / false, or null when the page didn't say. */
+  async signedIn(page) {
+    await page.goto('https://www.youtube.com/?hl=en', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    for (let i = 0; i < 30; i++) {
+      const v = await page.evaluate(() => (typeof window.ytcfg?.get === 'function' ? window.ytcfg.get('LOGGED_IN') : undefined)).catch(() => undefined);
+      if (typeof v === 'boolean') return v;
+      await page.waitForTimeout(500);
+    }
+    return null;
+  },
+
+  /** Upload page bounced to Google: really signed out, or just a "confirm it's you" step? */
+  async loginWall(page) {
+    const shown = page.url();
+    const signedIn = await this.signedIn(page).catch(() => null);
+    if (signedIn === false) throw new LoggedOutError(this.label);
+    throw Object.assign(new Error(`Google asked to confirm the sign-in before uploading (${shown.split('?')[0]}). Open the post with Watch, or use Check in Settings → Social accounts, then retry.`), { final: true });
+  },
 
   async identify(page) {
     await page.goto('https://studio.youtube.com/?hl=en', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -23,14 +43,14 @@ export const youtube = {
   async publish({ page, file, clip, settings, step, final }) {
     step('Opening YouTube Studio');
     await page.goto('https://www.youtube.com/upload?hl=en', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    if (/accounts\.google\.com|ServiceLogin/.test(page.url())) throw new LoggedOutError(this.label);
+    if (/accounts\.google\.com|ServiceLogin/.test(page.url())) await this.loginWall(page);
     const fileInput = page.locator('ytcp-uploads-dialog input[type=file], input[type=file][name=Filedata], input[type=file]').first();
     await waitForAny({
       dialog: () => fileInput.count(),
       noChannel: () => page.getByText(/create (a|your) channel/i).first().isVisible(),
       login: async () => /accounts\.google\.com/.test(page.url()),
-    }, { timeout: 60000, what: 'the YouTube upload dialog' }).then(({ name }) => {
-      if (name === 'login') throw new LoggedOutError(this.label);
+    }, { timeout: 60000, what: 'the YouTube upload dialog' }).then(async ({ name }) => {
+      if (name === 'login') await this.loginWall(page);
       if (name === 'noChannel') throw Object.assign(new Error('This Google account has no YouTube channel yet. Create one on YouTube first.'), { final: true });
     });
     await pause(600, 1400);

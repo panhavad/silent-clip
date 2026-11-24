@@ -9,6 +9,8 @@ import { autoSubtitles, phrasesToText, textToPhrases } from './engine/transcribe
 import { getChannel } from './engine/twitch.js';
 
 const PLAT_LABEL = { youtube: 'YouTube', tiktok: 'TikTok', instagram: 'Instagram' };
+const PLAT_SHORT = { youtube: 'YouTube', tiktok: 'TikTok', instagram: 'Reels' };
+const PLATFORMS = ['youtube', 'tiktok', 'instagram'];
 const PLAT_ICON = { youtube: icon('youtube'), tiktok: icon('tiktok'), instagram: icon('instagram') };
 
 export class ClipLibrary {
@@ -74,20 +76,22 @@ export class ClipLibrary {
             ${c.isNew ? '<span class="badge new">New</span>' : ''}
             ${c.viral.subtitles?.length ? '<span class="badge" title="Has spoken subtitles">CC</span>' : ''}
             ${c.downloadedAt ? `<span class="plat dl" title="Downloaded">${icon('download')}</span>` : ''}
-            ${Object.keys(c.posted).map((p) => `<span class="plat ${p}" title="Posted to ${PLAT_LABEL[p]}">${PLAT_ICON[p]}</span>`).join('')}
-            ${(c.scheduled || []).map((s) => `<span class="badge" title="Scheduled on ${PLAT_LABEL[s.platform]} for ${new Date(s.at).toLocaleString()}">${icon('clock')}${PLAT_ICON[s.platform]}</span>`).join('')}
           </div>
           <div class="score">${icon('flame')}${c.viral.score ?? '–'}</div>
         </div>
         <div class="info">
           <div class="title">${esc(c.title)}</div>
           <div class="muted small">${esc(c.streamer)} · ${timeAgo(c.createdAt)}</div>
+          <div class="card-publish">${PLATFORMS.map((p) => this.publishButton(c, p)).join('')}</div>
         </div>
       </div>`).join('');
     lazyImages(grid);
     grid.querySelectorAll('.clip-card').forEach((card) => {
       const clip = clips.find((c) => c.id === card.dataset.id);
       card.onclick = () => this.open(clip);
+      card.querySelectorAll('.pub').forEach((b) => {
+        b.onclick = (e) => { e.stopPropagation(); this.quickPost(clip, b.dataset.p, b).catch((err) => toast(err.message, 'error')); };
+      });
       const thumb = card.querySelector('.thumb');
       card.onmouseenter = () => {
         const v = document.createElement('video');
@@ -96,6 +100,64 @@ export class ClipLibrary {
       };
       card.onmouseleave = () => thumb.querySelector('video')?.remove();
     });
+    // While a post from this list is running, keep the buttons' state fresh.
+    clearTimeout(this.pollTimer);
+    const active = clips.some((c) => (c.scheduled || []).some((s) => s.status === 'publishing' || s.at <= Date.now() + 60000));
+    if (active) this.pollTimer = setTimeout(() => { if (this.root.offsetParent) this.load().catch(() => {}); }, 4000);
+  }
+
+  publishButton(c, p) {
+    const label = PLAT_LABEL[p];
+    const pending = (c.scheduled || []).find((s) => s.platform === p);
+    const posted = c.posted[p];
+    let state = '';
+    let title = `Post to ${label} now`;
+    let badge = '';
+    if (pending?.status === 'publishing' || (pending && pending.at <= Date.now())) {
+      state = 'publishing'; title = `Posting to ${label}…`; badge = icon('loader', 'spin');
+    } else if (pending) {
+      state = 'scheduled'; title = `Scheduled on ${label} for ${new Date(pending.at).toLocaleString()} — click to post now instead`; badge = icon('clock');
+    } else if (posted) {
+      state = 'posted'; title = `Posted to ${label} ${timeAgo(posted.at)} — click to post again`; badge = icon('check');
+    }
+    return `<button class="pub plat-btn ${p} ${state}" data-p="${p}" title="${esc(title)}" aria-label="${esc(title)}" ${state === 'publishing' ? 'disabled' : ''}>
+      ${PLAT_ICON[p]}<span class="pub-label">${PLAT_SHORT[p]}</span>${badge ? `<span class="pub-state">${badge}</span>` : ''}</button>`;
+  }
+
+  /** Post straight from the clip list: one click per platform (asks to log in first if needed). */
+  async quickPost(clip, platform, btn) {
+    const label = PLAT_LABEL[platform];
+    const accounts = await getAccounts(true);
+    const acc = accountFor(accounts, platform);
+    if (!acc?.connected) {
+      toast(`Log in to ${label} once, then the clip is posted.`);
+      return loginTo(platform, () => this.quickPost(clip, platform, btn));
+    }
+    const pending = (clip.scheduled || []).find((s) => s.platform === platform);
+    const posted = clip.posted[platform];
+    const note = posted ? `\n\nIt was already posted to ${label} ${timeAgo(posted.at)}; this posts it again.`
+      : pending ? `\n\nThis replaces the post scheduled for ${new Date(pending.at).toLocaleString()}.` : '';
+    if (!confirm(`Post "${clip.title}" to ${label} now?${note}`)) return;
+    btn.disabled = true;
+    btn.classList.add('publishing');
+    try {
+      const post = await api('/api/posts', { method: 'POST', body: { clipId: clip.id, platform } });
+      toast(`Posting to ${label}. You'll be notified when it's done.`, 'ok');
+      if ((await api('/api/me')).settings.publishView === 'foreground') this.watchWhenStarted(clip.id, post.id, label);
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+    this.load().catch(() => {});
+  }
+
+  // "Show the browser while posting": open the live view as soon as the post's browser starts.
+  async watchWhenStarted(clipId, postId, label) {
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const p = (await api(`/api/posts?clipId=${clipId}`).catch(() => [])).find((x) => x.id === postId);
+      if (!p || p.status !== 'scheduled' && p.status !== 'publishing') return;
+      if (p.sessionId) return openBrowserViewer({ sessionId: p.sessionId, mode: 'watch', title: `Posting to ${label}` });
+    }
   }
 
   // Only shown when an admin has set a storage limit for this account.

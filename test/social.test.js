@@ -21,7 +21,10 @@ const skip = browserAvailable() ? false : 'no Chrome, Edge or Chromium installed
 // ---- fake platform ----
 const PAGES = {
   '/login': `<button id="in" style="position:absolute;left:100px;top:100px;width:200px;height:80px"
-      onclick="document.cookie='sid=abc; max-age=3600; path=/'; document.body.dataset.ok=1">Log in</button>`,
+      onclick="document.cookie='sid=abc; max-age=3600; path=/'; document.body.dataset.ok=1">Log in</button>
+      <script>if (location.search.includes('next=')) setTimeout(() => { location.href = '/upload'; }, 1500);</script>`,
+  // A signed-in visit that briefly passes through the login page (like Google's sign-in redirects).
+  '/bounce': `<script>location.href = '/login?next=/upload';</script>`,
   '/upload': `<input type="file" id="f" onchange="document.getElementById('post').disabled=false">
       <div id="cap" contenteditable="true" style="min-height:40px;border:1px solid"></div>
       <button id="post" disabled onclick="localStorage.cap=document.getElementById('cap').innerText; location.href='/done?v=777'">Post</button>`,
@@ -113,24 +116,33 @@ test('browser login through the live viewer, then human-like posting with result
   // The saved profile keeps the session for later checks and posts.
   assert.equal((await call('/api/accounts/mock/check', { method: 'POST' })).data.loggedIn, true);
 
-  // Cookies without an expiry survive the browser being relaunched for the next post.
+  // Hidden sessions present the same device as a visible browser: no "Headless", real client hints.
   const me = (await call('/api/me')).data;
-  let s = await openSession({ userId: me.id, platform: 'mock', kind: 'check' });
-  await s.context.addCookies([{ name: 'tabonly', value: '1', url: SITE }]);
+  const s = await openSession({ userId: me.id, platform: 'mock', kind: 'check' });
+  await s.page.goto(`${SITE}/upload`);
+  const id = await s.page.evaluate(async () => ({
+    ua: navigator.userAgent, touch: navigator.maxTouchPoints,
+    hints: await navigator.userAgentData.getHighEntropyValues(['fullVersionList', 'platformVersion']),
+  }));
   await s.close();
-  s = await openSession({ userId: me.id, platform: 'mock', kind: 'check' });
-  const kept = (await s.cookies([SITE])).find((c) => c.name === 'tabonly');
-  await s.close();
-  assert.ok(kept && kept.expires > Date.now() / 1000 + 300 * 86400, 'session-only cookie kept with a long expiry');
+  assert.doesNotMatch(id.ua, /Headless/);
+  assert.ok(id.hints.fullVersionList.length > 0 && id.hints.fullVersionList.every((b) => !/Headless/.test(b.brand)), 'real full version list');
+  assert.ok(id.hints.fullVersionList.some((b) => !/^\d+\.0\.0\.0$/.test(b.version) && /^\d+\.\d+\.\d+\.\d+$/.test(b.version)), 'exact browser version, not a made-up one');
+  assert.equal(id.touch, 0);
 
   // Background keep-alive revisits the platform and records the refresh.
   const refreshed = await refreshDueSessions({ force: true });
   assert.deepEqual(refreshed.find((r) => r.platform === 'mock'), { userId: me.id, platform: 'mock', loggedIn: true });
   assert.ok((await call('/api/accounts')).data.keepAliveHours > 0);
 
-  // A login the site has dropped (it sends you to its login page) is reported as logged out, not just "cookies present".
+  // Passing through the login page on the way back (sign-in redirects) is not a logout.
+  DRIVERS.mock.homeUrl = `${SITE}/bounce`;
+  assert.equal((await call('/api/accounts/mock/check', { method: 'POST' })).data.loggedIn, true);
+  // Staying on the login page is: it's reported, with the reason.
   DRIVERS.mock.homeUrl = `${SITE}/login`;
   assert.equal((await call('/api/accounts/mock/check', { method: 'POST' })).data.loggedIn, false);
+  const expired = (await call('/api/accounts')).data.accounts.find((a) => a.platform === 'mock');
+  assert.match(expired.loggedOutReason, /login page/);
   DRIVERS.mock.homeUrl = `${SITE}/upload`;
   assert.equal((await call('/api/accounts/mock/check', { method: 'POST' })).data.loggedIn, true);
 

@@ -38,7 +38,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn.tt { background: #111; border-color: #25f4ee; box-shadow: inset -2px 0 0 #fe2c55; }
 .btn.ig { background: linear-gradient(45deg, #f58529, #dd2a7b, #8134af); border-color: transparent; }
 
-input[type=text], input[type=email], input[type=password], input[type=url], input[type=number], select, textarea {
+input[type=text], input[type=email], input[type=password], input[type=url], input[type=number], input[type=search], select, textarea {
   background: #0a1422; border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; width: 100%; outline: none;
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
@@ -405,3 +405,42 @@ body:has(.modal-back) { overflow: hidden; }
 .watch-user { display: grid; gap: 6px; padding: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; }
 .watch-where { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .watch-stream { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 8px; background: #0c1626; border-radius: 8px; font-size: 13px; }
+
+/* One-click posting from the clip list */
+.clip-card { container-type: inline-size; }
+.card-publish { display: flex; gap: 6px; margin-top: 6px; }
+.plat-btn { flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 6px 4px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text); font-size: 11px; font-weight: 700; cursor: pointer; position: relative; }
+.plat-btn .pub-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plat-btn:hover:not(:disabled) { border-color: #3d5a85; background: #1b2c47; }
+.plat-btn.youtube:hover:not(:disabled) { border-color: #ff0033; }
+.plat-btn.tiktok:hover:not(:disabled) { border-color: #25f4ee; }
+.plat-btn.instagram:hover:not(:disabled) { border-color: #dd2a7b; }
+.plat-btn:disabled { cursor: default; }
+.plat-btn .pub-state { display: inline-flex; }
+.plat-btn.posted { border-color: rgba(47, 210, 122, .5); background: rgba(47, 210, 122, .08); }
+.plat-btn.posted .pub-state { color: var(--ok); }
+.plat-btn.scheduled { border-color: rgba(255, 181, 71, .5); }
+.plat-btn.scheduled .pub-state { color: var(--warn); }
+.plat-btn.publishing { border-color: var(--accent); color: var(--muted); }
+@container (max-width: 240px) { .plat-btn .pub-label { display: none; } .plat-btn { padding: 7px 4px; } }
+.plat-btn.youtube > .ic:first-child { color: #ff3355; }
+.plat-btn.tiktok > .ic:first-child { color: #25f4ee; }
+.plat-btn.instagram > .ic:first-child { color: #f56fa1; }
+
+/* Find streamers (Streamers tab) */
+.find-controls { margin-bottom: 12px; }
+.find-controls .find-q { flex: 1; }
+.find-controls .find-lang { width: auto; }
+.find-crumb { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.find-list { display: grid; gap: 8px; }
+.find-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: var(--panel-2); border-radius: 10px; min-width: 0; }
+.find-item .avatar { width: 40px; height: 40px; }
+.ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.find-cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 120px), 1fr)); gap: 12px; }
+.find-cat { display: grid; gap: 4px; justify-items: start; text-align: left; padding: 8px; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 12px; color: var(--text); cursor: pointer; min-width: 0; font: inherit; }
+.find-cat:hover { border-color: var(--accent); transform: translateY(-1px); }
+.find-cat img, .find-cat-art { width: 100%; aspect-ratio: 52 / 72; object-fit: cover; border-radius: 8px; background: #0a1422; }
+.find-cat-name { font-weight: 700; font-size: 13px; line-height: 1.25; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 640px) { .find-item { flex-wrap: wrap; } .find-cats { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); } }

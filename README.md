@@ -84,7 +84,8 @@ Settings per user: **background** (hidden browser, reports the result) or **fore
 
 Safety rules:
 - Before every post the saved session is checked. If the platform logged it out, the post fails with "log in again" and the account is flagged in Settings.
-- **Logins are kept alive.** Every 6 hours (`SOCIAL_KEEPALIVE_HOURS`, `0` turns it off) each saved login is opened in the background, visits the platform for ~20 s (`SOCIAL_KEEPALIVE_DWELL_SEC`) so the site refreshes its login cookies, and is checked to confirm it's still signed in. Cookies that would normally vanish when the browser restarts are kept (with Chrome's maximum 400-day lifetime), and **Check** really loads the platform instead of only looking at cookies.
+- **Logins are kept alive.** Every 6 hours (`SOCIAL_KEEPALIVE_HOURS`, `0` turns it off) each saved login is opened in the background, visits the platform for ~20 s (`SOCIAL_KEEPALIVE_DWELL_SEC`) so the site refreshes its login cookies, and is checked to confirm it's still signed in. **Check** really asks the platform (for YouTube, YouTube's own signed-in flag) instead of only looking at cookies. A login is only marked expired on a clear answer, and Settings shows why.
+- **Same device every time.** The hidden browser presents exactly the identity of the visible one (the browser's real user agent and client hints, only without "Headless"), so a login made in a visible window isn't treated by Google as a session copied to another device.
 - Your SlientClip sign-in doesn't expire while you use it: every visit extends it to 400 days.
 - A failure **before** pressing Post is retried automatically (up to 3 times). A failure **after** pressing Post is never retried, because the video may already be live. The same applies to posts interrupted by a server restart.
 - Only one browser runs per account at a time; `MAX_PUBLISH_BROWSERS` (default 2) limits browsers server-wide.
@@ -127,13 +128,13 @@ The running release is shown as a badge next to the logo (hover it for the commi
 
 ## Using it
 
-1. Sign in (the first account is the administrator; later sign-ups wait in **Admin → Accounts** until approved) → **Streamers** → paste Twitch links.
+1. Sign in (the first account is the administrator; later sign-ups wait in **Admin → Accounts** until approved) → **Streamers** → paste Twitch links, or use **Find streamers**: search channels **by name**, or pick a **category** (most watched first, or search one) to see who's live in it now, sorted by viewers and optionally filtered by language, then **Add** with one click.
 2. **Live monitor** → choose **Browser** or **Server**, then (browser) **Background** or **Foreground** → **Start watching**.
    - **Server** keeps watching and clipping after you close the page; come back any time to see progress and clips. The choice survives server restarts and auto-updates.
    - Foreground opens a window per streamer (or one grid window). If the browser blocks pop-ups, allow them for the site or use **Watch in window** per streamer.
    - Each streamer is watched by exactly one window/tab at a time (Web Locks), so modes can be mixed safely.
 3. When chat explodes, the card shows *Capturing → Rendering 9:16 → Saved*. **Clip now** captures manually.
-4. **Clips** → review, tweak title/description/hashtags/caption (re-render), then click **YouTube Shorts**, **TikTok** or **Instagram** → **Post now** or **Schedule** (or *post manually* if the account isn't linked). Downloaded/posted clips leave the *New* list.
+4. **Clips** → each card has **YouTube / TikTok / Instagram** buttons: one click (and a confirm) posts the clip right away. If that account isn't logged in yet, the login opens first, and the button shows whether the clip is posting, scheduled or already posted. Open a clip to tweak title/description/hashtags/caption (re-render), or to **Schedule** a post (or *post manually* if the account isn't linked). Downloaded/posted clips leave the *New* list.
 5. **Schedule** → turn on **Auto-publish**, set posting times/days per platform and a minimum viral score. The calendar shows what goes out when; drag a post to another day, or click it to post now, reschedule, retry or unschedule.
 
 ### Accounts & administration

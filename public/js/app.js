@@ -13,6 +13,7 @@ import { preloadRenderer } from './engine/render.js';
 import { thresholds } from './engine/analyzer.js';
 import { renderVersion, watchForUpdates } from './version.js';
 import { skeleton, showLoading } from './loader.js';
+import { mountStreamerSearch } from './streamer-search.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -244,6 +245,7 @@ $('.notify').onclick = async () => {
 
 // ---------- streamers ----------
 let streamerSeq = 0;
+let finder = null; // "Find streamers" search (mounted below)
 function streamerRows(live) {
   return streamers.map((s) => {
     const c = live?.[s.login];
@@ -261,6 +263,7 @@ function streamerRows(live) {
 }
 
 async function renderStreamers() {
+  finder?.sync();
   const list = $('.streamer-list');
   const seq = ++streamerSeq;
   if (!streamers.length) { list.innerHTML = '<div class="empty">No streamers yet.</div>'; return; }
@@ -325,22 +328,32 @@ async function heartbeat() {
 }
 setInterval(heartbeat, 10000);
 
+/** Add a channel (link, handle or login). `known` = channel info the caller already has from Twitch. */
+async function addStreamer(raw, known) {
+  const login = (raw.match(/twitch\.tv\/([A-Za-z0-9_]+)/i)?.[1] || raw.replace(/^@/, '')).toLowerCase();
+  const info = known || (await getChannels([login]).catch(() => ({})))[login];
+  if (info === null) throw new Error(`Twitch channel "${login}" does not exist`);
+  const s = await api('/api/streamers', { method: 'POST', body: { url: raw, displayName: info?.displayName, avatar: info?.avatar } });
+  if (!streamers.some((x) => x.id === s.id)) streamers.push(s);
+  toast(`Added ${s.displayName}${info?.live ? ' (live now)' : ''}`, 'ok');
+  renderStreamers();
+  onStreamersChanged();
+  return s;
+}
+
 $('.add-streamer').onsubmit = async (e) => {
   e.preventDefault();
   const input = e.target.url;
   try {
-    const raw = input.value.trim();
-    const login = (raw.match(/twitch\.tv\/([A-Za-z0-9_]+)/i)?.[1] || raw.replace(/^@/, '')).toLowerCase();
-    const info = (await getChannels([login]).catch(() => ({})))[login];
-    if (info === null) throw new Error(`Twitch channel "${login}" does not exist`);
-    const s = await api('/api/streamers', { method: 'POST', body: { url: raw, displayName: info?.displayName, avatar: info?.avatar } });
-    if (!streamers.some((x) => x.id === s.id)) streamers.push(s);
+    await addStreamer(input.value.trim());
     input.value = '';
-    toast(`Added ${s.displayName}${info?.live ? ' (live now)' : ''}`, 'ok');
-    renderStreamers();
-    onStreamersChanged();
   } catch (err) { toast(err.message, 'error'); }
 };
+
+finder = mountStreamerSearch($('.streamer-finder'), {
+  isAdded: (login) => streamers.some((s) => s.login === login),
+  onAdd: (c) => addStreamer(c.login, c),
+});
 
 // ---------- settings ----------
 const form = $('.settings-form');

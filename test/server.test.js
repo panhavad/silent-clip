@@ -148,6 +148,7 @@ test('admin storage limit: oldest clips are replaced, scheduled ones are kept', 
   assert.equal((await upload('D')).overwritten, 1);
   const list = (await call('/api/clips')).data;
   assert.deepEqual(list.clips.map((c) => c.title), ['D', 'A']);
+  assert.equal(list.clips[1].scheduled[0].status, 'scheduled', 'cards get the pending post state');
   assert.equal(list.storage.limit, 1.5e6);
   assert.ok(list.storage.used <= 1.5e6);
 

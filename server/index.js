@@ -202,8 +202,8 @@ const getClip = (req) => db.prepare('SELECT * FROM clips WHERE id = ? AND user_i
 app.get('/api/clips', (req, res) => {
   const rows = db.prepare('SELECT * FROM clips WHERE user_id = ? ORDER BY created_at DESC').all(req.user.id).map(clipRow);
   const scheduled = {};
-  for (const p of db.prepare("SELECT clip_id, platform, scheduled_at FROM posts WHERE user_id = ? AND status IN ('scheduled', 'publishing')").all(req.user.id)) {
-    (scheduled[p.clip_id] ||= []).push({ platform: p.platform, at: p.scheduled_at });
+  for (const p of db.prepare("SELECT clip_id, platform, scheduled_at, status FROM posts WHERE user_id = ? AND status IN ('scheduled', 'publishing')").all(req.user.id)) {
+    (scheduled[p.clip_id] ||= []).push({ platform: p.platform, at: p.scheduled_at, status: p.status });
   }
   const counts = { all: rows.length, new: 0, downloaded: 0, posted: 0 };
   for (const c of rows) {

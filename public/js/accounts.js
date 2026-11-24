@@ -51,7 +51,7 @@ export async function renderAccounts(root) {
       const who = a.displayName || a.username;
       const state = a.loggedIn
         ? `Logged in${who ? ` as <b style="color:var(--text)">${esc(who)}</b>` : ''}${a.username && a.username !== who ? ` · @${esc(a.username)}` : ''}${a.checkedAt ? ` · checked ${timeAgo(a.checkedAt)}` : ''}`
-        : a.known ? '<span style="color:var(--warn)">Session expired. Log in again.</span>' : 'Not logged in';
+        : a.known ? `<span style="color:var(--warn)">Session expired. Log in again.</span>${a.loggedOutReason ? `<div class="small muted" title="${esc(a.loggedOutReason)}">Why: ${esc(a.loggedOutReason)}${a.checkedAt ? ` (${timeAgo(a.checkedAt)})` : ''}</div>` : ''}` : 'Not logged in';
       return `<div class="account ${a.loggedIn ? 'on' : ''}" data-p="${a.platform}">
         <div class="plat-logo ${m.cls}">${m.icon}</div>
         <div style="min-width:0;flex:1"><div><b>${m.label}</b></div>

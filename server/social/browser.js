@@ -6,14 +6,13 @@
 import { chromium } from 'playwright-core';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { DATA_DIR } from '../db.js';
 
 export const PROFILES_DIR = path.join(DATA_DIR, 'browser');
 const VIEWPORT = { width: 1280, height: 800 };
 const LOGIN_IDLE_MS = 15 * 60 * 1000;
-// Chrome caps cookie lifetimes at 400 days.
-const KEEP_COOKIES_SEC = 400 * 86400;
 
 const CANDIDATES = {
   win32: [
@@ -39,18 +38,43 @@ export function browserExecutable() {
   return cachedExe;
 }
 
-// Hidden (headless) Chrome announces itself as "HeadlessChrome", which sites treat as a bot or a
-// different device. Present the same identity a normal desktop Chrome of this version sends.
-let cachedUA;
-async function desktopUserAgent() {
-  if (cachedUA) return cachedUA;
-  const b = await chromium.launch({ executablePath: browserExecutable(), headless: true, args: process.platform === 'linux' && fs.existsSync('/.dockerenv') ? ['--no-sandbox'] : [] });
-  const major = b.version().split('.')[0];
-  await b.close();
-  const os = { win32: 'Windows NT 10.0; Win64; x64', darwin: 'Macintosh; Intel Mac OS X 10_15_7' }[process.platform] || 'X11; Linux x86_64';
-  cachedUA = { ua: `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`, major };
-  return cachedUA;
+// Hidden (headless) Chrome is the same browser, but its user-agent string says "HeadlessChrome".
+// Sites (Google especially) tie a login to the device it was made on, so the hidden browser must
+// present exactly what the visible one does: the same UA string and the same client hints (brands,
+// full version, OS version). These are read from the browser itself, never made up.
+let cachedIdentity;
+async function realIdentity() {
+  if (cachedIdentity) return cachedIdentity;
+  const srv = http.createServer((_q, r) => r.end('<!doctype html><title>.</title>'));
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r)); // localhost counts as a secure page, so all hints are readable
+  const b = await chromium.launch({ executablePath: browserExecutable(), headless: true, args: sandboxArgs() });
+  try {
+    const page = await b.newPage();
+    await page.goto(`http://127.0.0.1:${srv.address().port}/`);
+    const v = await page.evaluate(async () => ({
+      ua: navigator.userAgent,
+      hints: await navigator.userAgentData?.getHighEntropyValues(['architecture', 'bitness', 'model', 'platformVersion', 'fullVersionList', 'uaFullVersion', 'wow64']),
+    }));
+    const fix = (s) => String(s).replace(/Headless\s?/g, '');
+    const h = v.hints;
+    cachedIdentity = {
+      ua: fix(v.ua),
+      metadata: h && {
+        brands: h.brands.map((x) => ({ brand: fix(x.brand), version: x.version })),
+        fullVersionList: h.fullVersionList.map((x) => ({ brand: fix(x.brand), version: x.version })),
+        fullVersion: h.uaFullVersion, platform: h.platform, platformVersion: h.platformVersion,
+        architecture: h.architecture, model: h.model, mobile: h.mobile, bitness: h.bitness, wow64: h.wow64,
+      },
+    };
+    return cachedIdentity;
+  } finally {
+    await b.close().catch(() => {});
+    srv.close();
+  }
 }
+
+// Containers run as a non-root user without user namespaces, where Chrome's sandbox can't start.
+const sandboxArgs = () => (process.platform === 'linux' && fs.existsSync('/.dockerenv') ? ['--no-sandbox'] : []);
 
 export const browserAvailable = () => process.env.BROWSER_DISABLED !== 'true' && Boolean(browserExecutable());
 /** A visible window is only possible when the server machine has a desktop. */
@@ -98,12 +122,15 @@ export class BrowserSession {
       '--disable-blink-features=AutomationControlled',
       '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage',
       `--window-size=${VIEWPORT.width + 20},${VIEWPORT.height + 140}`, '--lang=en-US',
+      ...sandboxArgs(),
     ];
-    // Containers run as a non-root user without user namespaces, where Chrome's sandbox can't start.
-    if (process.platform === 'linux' && fs.existsSync('/.dockerenv')) args.push('--no-sandbox');
     let identity = null;
     try {
-      if (!this.headed) identity = await desktopUserAgent();
+      if (!this.headed) {
+        identity = await realIdentity();
+        // Browser-wide, so background/service workers send the same UA string as the page.
+        args.push(`--user-agent=${identity.ua}`);
+      }
       this.context = await chromium.launchPersistentContext(dir, {
         executablePath: browserExecutable(),
         headless: !this.headed,
@@ -112,7 +139,6 @@ export class BrowserSession {
         args,
         ignoreDefaultArgs: ['--enable-automation'],
         acceptDownloads: false,
-        ...(identity ? { userAgent: identity.ua } : {}),
       });
     } catch (e) {
       this.release();
@@ -120,8 +146,9 @@ export class BrowserSession {
       throw e;
     }
     this.identity = identity;
-    // Hidden Chrome claims a touchscreen (maxTouchPoints 10), which makes sites serve tablet layouts.
-    if (identity) await this.context.addInitScript(() => Object.defineProperty(Navigator.prototype, 'maxTouchPoints', { get: () => 0 })).catch(() => {});
+    // Report no touchscreen in both modes (hidden Chrome claims one, and sites then serve tablet layouts),
+    // so a login made in a visible window looks like the same device to later hidden sessions.
+    await this.context.addInitScript(() => Object.defineProperty(Navigator.prototype, 'maxTouchPoints', { get: () => 0 })).catch(() => {});
     this.context.on('page', (p) => this.attach(p));
     this.context.on('close', () => this.release());
     await this.attach(this.context.pages()[0] || await this.context.newPage());
@@ -142,15 +169,10 @@ export class BrowserSession {
       await old?.detach().catch(() => {});
       const cdp = await this.context.newCDPSession(page);
       this.cdp = cdp;
-      if (this.identity) {
-        const { ua, major } = this.identity;
-        const platform = { win32: 'Windows', darwin: 'macOS' }[process.platform] || 'Linux';
+      if (this.identity?.metadata) {
+        // The --user-agent switch drops the detailed client hints; put the browser's real ones back.
         await cdp.send('Emulation.setUserAgentOverride', {
-          userAgent: ua, acceptLanguage: 'en-US,en',
-          userAgentMetadata: {
-            brands: [{ brand: 'Chromium', version: major }, { brand: 'Google Chrome', version: major }, { brand: 'Not?A_Brand', version: '99' }],
-            fullVersion: `${major}.0.0.0`, platform, platformVersion: platform === 'Windows' ? '10.0.0' : '', architecture: 'x86', model: '', mobile: false,
-          },
+          userAgent: this.identity.ua, acceptLanguage: 'en-US', userAgentMetadata: this.identity.metadata,
         }).catch(() => {});
       }
       cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
@@ -232,27 +254,9 @@ export class BrowserSession {
     if (byProfile.get(this.key) === this) byProfile.delete(this.key);
   }
 
-  /**
-   * Cookies without an expiry are dropped when Chrome restarts, and this profile is relaunched for every
-   * post. Give them a long expiry before closing (like Chrome's "continue where you left off") so logins
-   * that rely on them survive.
-   */
-  async persistSessionCookies() {
-    const ctx = this.context;
-    if (!ctx) return 0;
-    const now = Math.floor(Date.now() / 1000);
-    const sessionOnly = (await ctx.cookies().catch(() => [])).filter((c) => c.expires === -1 && c.value && !c.partitionKey);
-    let kept = 0;
-    for (const c of sessionOnly) {
-      try { await ctx.addCookies([{ ...c, expires: now + KEEP_COOKIES_SEC }]); kept++; } catch { /* e.g. __Host- cookies that can't be re-set */ }
-    }
-    return kept;
-  }
-
   async close() {
-    const ctx = this.context;
-    await this.persistSessionCookies().catch(() => {});
     this.release();
+    const ctx = this.context;
     this.context = null;
     await ctx?.close().catch(() => {});
   }

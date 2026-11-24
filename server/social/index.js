@@ -30,6 +30,7 @@ export function getAccount(userId, platform) {
   return {
     platform, username: r.username, displayName: r.display_name, avatar: r.avatar,
     loggedIn: meta.loggedIn !== false, checkedAt: meta.checkedAt || r.updated_at, refreshedAt: meta.refreshedAt || null, demo: Boolean(meta.demo), since: r.created_at,
+    loggedOutReason: meta.loggedIn === false ? meta.reason || null : null,
   };
 }
 
@@ -46,8 +47,9 @@ export function saveAccount(userId, platform, info = {}) {
     .run(userId, platform, info.username || null, info.displayName || null, info.avatar || null, meta, now, now);
 }
 
-export function markLoggedOut(userId, platform) {
-  touchAccount(userId, platform, { loggedIn: false, checkedAt: Date.now() });
+export function markLoggedOut(userId, platform, reason = '') {
+  console.warn(`[social] ${platform} login of user ${userId} marked expired: ${reason || 'no reason given'}`);
+  touchAccount(userId, platform, { loggedIn: false, checkedAt: Date.now(), reason: String(reason).slice(0, 300) || null });
 }
 
 function touchAccount(userId, platform, patch) {
@@ -81,6 +83,11 @@ async function confirmLogin(userId, session) {
   const d = DRIVERS[session.platform];
   const { cookies, loggedIn } = await readSession(session);
   if (!loggedIn) return { loggedIn: false };
+  if (d.signedIn) {
+    session.step = 'Checking the sign-in';
+    // Cookies alone can be leftovers; ask the platform itself before saving the login.
+    if (await d.signedIn(session.page).catch(() => null) === false) return { loggedIn: false };
+  }
   session.step = 'Reading account name';
   const who = await d.identify(session.page, cookies).catch(() => null);
   saveAccount(userId, session.platform, who || {});
@@ -89,7 +96,8 @@ async function confirmLogin(userId, session) {
 
 /**
  * Open the saved login in the background, visit the platform the way an open tab would (so the site
- * refreshes / rotates its own login cookies), save them and record whether it is really still signed in.
+ * refreshes its own login cookies) and record the result. Only a definite answer marks a login as
+ * expired; returns true / false, or null when the platform didn't give a clear answer.
  */
 export async function refreshSession(userId, platform) {
   const d = DRIVERS[platform];
@@ -97,15 +105,23 @@ export async function refreshSession(userId, platform) {
   try {
     s.step = 'Keeping the login fresh';
     let { loggedIn } = await readSession(s);
-    if (loggedIn && d.homeUrl) {
+    let reason = loggedIn ? '' : `the ${d.label} login cookies are gone from the browser profile`;
+    if (loggedIn && d.signedIn) {
+      const v = await d.signedIn(s.page).catch(() => null);
+      await sleep(KEEPALIVE_DWELL_MS);
+      if (v === false) { loggedIn = false; reason = `${d.label} says this browser is signed out`; } else if (v === null) loggedIn = null;
+    } else if (loggedIn && d.homeUrl) {
       await s.page.goto(d.homeUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
       await s.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
       await sleep(KEEPALIVE_DWELL_MS);
-      loggedIn = !d.loggedOutUrl?.test(s.page.url()) && (await readSession(s)).loggedIn;
+      // Sign-in redirects can pass through a login URL on their way back; only a page that stays there counts.
+      let onLogin = d.loggedOutUrl?.test(s.page.url());
+      for (let i = 0; onLogin && i < 16; i++) { await sleep(500); onLogin = d.loggedOutUrl.test(s.page.url()); }
+      if (onLogin) { loggedIn = false; reason = `${d.label} sent the browser to its login page (${s.page.url().split('?')[0]})`; } else if (!(await readSession(s)).loggedIn) { loggedIn = false; reason = `the ${d.label} login cookies were removed by the site`; }
     }
-    if (!loggedIn) markLoggedOut(userId, platform);
-    else if (!getAccount(userId, platform)) await confirmLogin(userId, s);
-    else touchAccount(userId, platform, { loggedIn: true, checkedAt: Date.now(), refreshedAt: Date.now() });
+    if (loggedIn === false) markLoggedOut(userId, platform, reason);
+    else if (loggedIn && !getAccount(userId, platform)) await confirmLogin(userId, s);
+    else if (loggedIn) touchAccount(userId, platform, { loggedIn: true, checkedAt: Date.now(), refreshedAt: Date.now(), reason: null });
     return loggedIn;
   } finally { await s.close(); }
 }
@@ -195,7 +211,7 @@ export async function publishWithBrowser({ user, platform, file, clip, onStep, o
     await pause(1500, 2500);
     return out;
   } catch (e) {
-    if (e.loggedOut) markLoggedOut(user.id, platform);
+    if (e.loggedOut) markLoggedOut(user.id, platform, `posting found the browser signed out (${(() => { try { return session.page.url().split('?')[0]; } catch { return 'page closed'; } })()})`);
     try { e.screenshot = await session.page.screenshot({ type: 'jpeg', quality: 70, timeout: 8000 }); } catch { /* browser gone */ }
     if (pressedPost && !e.final) {
       e.final = true;
@@ -234,7 +250,7 @@ router.get('/api/accounts', (req, res) => {
       return {
         platform: d.id, label: d.label, connected: Boolean(a?.loggedIn), loggedIn: Boolean(a?.loggedIn), known: Boolean(a),
         username: a?.username || null, displayName: a?.displayName || null, avatar: a?.avatar || null,
-        checkedAt: a?.checkedAt || null, demo: Boolean(a?.demo), session: s ? { id: s.id, kind: s.kind, step: s.step } : null,
+        checkedAt: a?.checkedAt || null, demo: Boolean(a?.demo), loggedOutReason: a?.loggedOutReason || null, session: s ? { id: s.id, kind: s.kind, step: s.step } : null,
       };
     }),
   });
