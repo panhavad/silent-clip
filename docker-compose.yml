@@ -30,6 +30,16 @@ services:
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-300}
     volumes:
       - data:/data
+    networks:
+      - default
+      - tunnel_net
 
 volumes:
   data:
+
+networks:
+  # Shared with a reverse proxy / tunnel container (e.g. cloudflared), which can reach the app as http://app:8080.
+  # It must exist before `docker compose up`: docker network create tunnel_net
+  tunnel_net:
+    name: ${TUNNEL_NETWORK:-tunnel_net}
+    external: true

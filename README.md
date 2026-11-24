@@ -90,9 +90,12 @@ Your Chrome + SlientClip Publisher extension                              │ du
 git clone https://<user>:<token>@github.com/<owner>/<repo>.git slientclip
 cd slientclip
 cp .env.example .env      # fill in values (see below)
+docker network create tunnel_net   # once; skip if it already exists
 docker compose up -d --build
 # open http://<host>:8080
 ```
+
+The app joins the external Docker network `tunnel_net` (rename with `TUNNEL_NETWORK` in `.env`), so a tunnel or reverse-proxy container on that network (cloudflared, Caddy, Nginx, Traefik…) can reach it at `http://app:8080` without publishing a port. It also keeps its own default network and the `APP_PORT` mapping.
 
 Put it behind HTTPS (Caddy, Nginx, Traefik, Cloudflare Tunnel…) for production and set `PUBLIC_URL=https://…` so cookies are marked `Secure`.
 
@@ -211,6 +214,7 @@ Set these in `.env` (Docker Compose passes the common ones through; see `.env.ex
 |---|---|---|
 | `PUBLIC_URL` | – | Public address, e.g. `https://clips.example.com`; `https://` makes sign-in cookies `Secure` |
 | `APP_PORT` / `PORT` | `8080` | Port published by Docker / port the app listens on |
+| `TUNNEL_NETWORK` | `tunnel_net` | External Docker network the app joins, for a tunnel / reverse proxy (must exist) |
 | `ALLOW_REGISTRATION` | `true` | `false` turns off sign-up |
 | `REQUIRE_APPROVAL` | `true` | `false` activates new accounts without admin approval |
 | `ADMIN_EMAIL` | – | This account is always an active administrator |
