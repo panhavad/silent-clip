@@ -105,6 +105,14 @@ On a new commit it runs `git reset --hard origin/<branch>` and `docker compose u
 
 > The updater mounts `/var/run/docker.sock` so it can rebuild containers — run it only on a host you control.
 
+### Which version is deployed?
+
+The running release is shown as a badge next to the logo (hover it for the commit, build time and server start time), on the sign-in page, and under **Admin → Deployed version**. `GET /healthz` returns the same data as JSON, e.g. `{"version":"1.5.0","commit":"9a36007","builtAt":"…"}`.
+
+- The version number comes from `package.json` — bump it for each release (`npm version minor --no-git-tag-version`).
+- The commit and build time are stamped into the image. The updater passes the commit it deploys automatically; for a manual build pass it yourself: `GIT_COMMIT=$(git rev-parse HEAD) docker compose up -d --build app`. Local `npm run dev` reads the commit from git.
+- When a new build is deployed while someone has the app open, a **New version · Reload** button appears in the top bar.
+
 ## Using it
 
 1. Sign in (the first account is the administrator; later sign-ups wait in **Admin → Accounts** until approved) → **Streamers** → paste Twitch links.

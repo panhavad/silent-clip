@@ -29,6 +29,16 @@ test('parseTwitchLogin accepts links and handles', () => {
   assert.equal(parseTwitchLogin('not a channel!'), null);
 });
 
+test('healthz and public config report the deployed version', async () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const health = (await call('/healthz')).data;
+  assert.equal(health.version, pkg.version);
+  assert.match(health.label, new RegExp(`^v${pkg.version.replace(/\./g, '\\.')}`));
+  const { build } = (await call('/api/config')).data;
+  assert.equal(build.version, pkg.version);
+  assert.equal(build.commit, health.commit);
+});
+
 test('auth, streamers and clip lifecycle with new/downloaded/posted tracking', async () => {
   assert.equal((await call('/api/me')).status, 401);
   assert.equal((await call('/api/auth/register', { method: 'POST', body: { email: 'a@b.co', password: 'short' } })).status, 400);

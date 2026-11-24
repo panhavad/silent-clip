@@ -18,11 +18,23 @@ function showSecret(title, email, password) {
 }
 
 export class AdminView {
-  constructor(root, { me, onCounts }) {
+  constructor(root, { me, build, onCounts }) {
     this.root = root;
     this.me = me;
     this.onCounts = onCounts;
     this.filter = 'all';
+    const when = (iso) => (iso ? new Date(iso).toLocaleString() : '–');
+    const buildPanel = `
+      <div class="panel" style="margin-top:16px">
+        <div class="section-head"><div><h2 style="margin:0">Deployed version</h2>
+          <div class="muted small">The release this server is running. It changes when the auto-updater deploys a new push.</div></div></div>
+        <div class="build-info">
+          <div><span class="muted small">Version</span><b>v${esc(build?.version || '?')}</b></div>
+          <div><span class="muted small">Commit</span><b class="mono">${esc(build?.commit || 'unknown')}</b></div>
+          <div><span class="muted small">Built</span><b>${esc(build?.builtAt ? when(build.builtAt) : 'local run (not stamped)')}</b></div>
+          <div><span class="muted small">Server started</span><b>${esc(when(build?.startedAt))}</b></div>
+        </div>
+      </div>`;
     root.innerHTML = `
       <div class="panel" style="margin-bottom:16px">
         <div class="section-head">
@@ -58,7 +70,7 @@ export class AdminView {
           <label class="btn danger">${icon('upload')}Restore database<input type="file" accept=".db" class="restore-db" hidden></label>
           <span class="small muted">Restoring replaces all data and restarts the server.</span>
         </div>
-      </div>`;
+      </div>${buildPanel}`;
     const $ = (s) => root.querySelector(s);
     root.querySelectorAll('.filters button').forEach((b) => { b.onclick = () => { this.filter = b.dataset.f; this.render(); }; });
     $('.new-user').onclick = () => $('.create-form').classList.toggle('hidden');

@@ -11,6 +11,7 @@ import { ServerManager } from './server-manager.js';
 import { icon, hydrateIcons } from './icons.js';
 import { preloadRenderer } from './engine/render.js';
 import { thresholds } from './engine/analyzer.js';
+import { renderVersion, watchForUpdates } from './version.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -26,6 +27,8 @@ const channel = new BroadcastChannel(`slientclip-${me.id}`);
 const windowStatus = new Map();
 
 $('.me-name').textContent = me.name || me.email;
+renderVersion($('.ver'), config.build);
+watchForUpdates(config.build, $('.update-pill'));
 if (me.avatar) $('.me-avatar').src = me.avatar; else $('.me-avatar').classList.add('hidden');
 $('.logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }); location.href = '/login.html'; };
 
@@ -55,7 +58,7 @@ if (me.role === 'admin') {
   $('.admin-tab').classList.remove('hidden');
   $('.admin-badge').classList.remove('hidden');
   const setPending = (n) => { const el = $('.pending-count'); el.textContent = n; el.classList.toggle('hidden', !n); };
-  adminView = new AdminView($('.admin-root'), { me, onCounts: (c) => setPending(c.pending) });
+  adminView = new AdminView($('.admin-root'), { me, build: config.build, onCounts: (c) => setPending(c.pending) });
   api('/api/admin/users').then((d) => setPending(d.counts.pending)).catch(() => {});
 }
 

@@ -4,9 +4,14 @@ import { ServerManager } from './server-manager.js';
 import { mountMonitors } from './monitor.js';
 import { preloadRenderer } from './engine/render.js';
 import { hydrateIcons } from './icons.js';
+import { renderVersion, watchForUpdates } from './version.js';
 
 hydrateIcons();
 const me = await api('/api/me');
+api('/api/config').then(({ build }) => {
+  renderVersion(document.querySelector('.ver'), build);
+  watchForUpdates(build, document.querySelector('.update-pill'));
+}).catch(() => {});
 const streamers = await api('/api/streamers');
 const logins = (new URLSearchParams(location.search).get('logins') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 const list = logins.map((l) => streamers.find((s) => s.login === l) || { login: l, displayName: l });

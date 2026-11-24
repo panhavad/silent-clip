@@ -11,6 +11,10 @@ RUN ONNXRUNTIME_NODE_INSTALL=skip npm ci --omit=dev && npm cache clean --force \
  && rm -rf node_modules/onnxruntime-node/bin/napi-v6/darwin node_modules/onnxruntime-node/bin/napi-v6/win32
 COPY server ./server
 COPY public ./public
+# Stamped by docker compose (the updater passes the deployed commit) so the UI can show what is running.
+ARG GIT_COMMIT=""
+ARG BUILD_TIME=""
+RUN node -e "require('fs').writeFileSync('build.json', JSON.stringify({ commit: process.env.GIT_COMMIT || '', builtAt: process.env.BUILD_TIME || new Date().toISOString() }))"
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME /data

@@ -3,3 +3,4 @@ data/
 .env
 *.log
 public/dev-sample.ts
+build.json

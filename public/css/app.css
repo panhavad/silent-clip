@@ -338,3 +338,14 @@ body:has(.modal-back) { overflow: hidden; }
   .btn.sm { padding: 7px 11px; }
   .tab, .seg button { min-height: 38px; }
 }
+/* ---------- version ---------- */
+.ver { margin-left: 2px; font-size: 11px; font-weight: 700; letter-spacing: 0; color: var(--muted); background: #13223a; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; cursor: default; align-self: center; }
+.update-pill { background: rgba(16, 201, 143, .15); border-color: rgba(16, 201, 143, .5); color: #7ef0c8; }
+.update-pill:hover { background: rgba(16, 201, 143, .25); border-color: var(--accent-2); }
+.build-info { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 10px; }
+.build-info > div { display: grid; gap: 4px; padding: 10px 12px; background: var(--panel-2); border-radius: 10px; }
+.mono { font-family: ui-monospace, Consolas, monospace; }
+@media (max-width: 640px) {
+  .ver { font-size: 10px; padding: 1px 6px; }
+  .update-pill { order: 4; flex: 1 0 100%; justify-content: center; white-space: normal; }
+}

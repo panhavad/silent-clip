@@ -2,7 +2,11 @@ name: slientclip
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        BUILD_TIME: ${BUILD_TIME:-}
     image: slientclip-app
     restart: unless-stopped
     ports:

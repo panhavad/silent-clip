@@ -70,7 +70,8 @@ async function update(reason) {
     const changed = (await git('diff', '--name-only', localHead, remoteHead)).split('\n');
     await git('reset', '-q', '--hard', remoteHead);
     const hostPath = await hostRepoPath().catch(() => '');
-    const env = hostPath ? { REPO_HOST_PATH: hostPath } : {};
+    const env = { GIT_COMMIT: remoteHead, BUILD_TIME: new Date().toISOString() };
+    if (hostPath) env.REPO_HOST_PATH = hostPath;
     log(await compose(['up', '-d', '--build', '--no-deps', '--remove-orphans', ...UPDATE_SERVICES.split(/[\s,]+/).filter(Boolean)], env));
     if (changed.some((f) => f.startsWith('updater/')) && hostPath) {
       // Recreating ourselves would kill this process mid-command, so hand off to a one-shot helper.
