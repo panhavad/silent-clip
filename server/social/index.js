@@ -33,6 +33,8 @@ export function getAccount(userId, platform) {
     loggedIn: meta.loggedIn !== false, checkedAt: meta.checkedAt || r.updated_at, refreshedAt: meta.refreshedAt || null, demo: Boolean(meta.demo), since: r.created_at,
     loggedOutReason: meta.loggedIn === false ? meta.reason || null : null,
     history: Array.isArray(meta.history) ? meta.history : [],
+    // 'browser' = the server's own browser profile; 'extension' = the user's Chrome via the SlientClip extension.
+    method: meta.method === 'extension' ? 'extension' : 'browser',
   };
 }
 
@@ -52,7 +54,7 @@ export function saveAccount(userId, platform, info = {}) {
   const now = Date.now();
   const prev = json(db.prepare('SELECT meta FROM accounts WHERE user_id = ? AND platform = ?').get(userId, platform)?.meta, {});
   const history = [{ at: now, ok: true, text: 'Signed in' }, ...(Array.isArray(prev.history) ? prev.history : [])].slice(0, HISTORY_MAX);
-  const meta = JSON.stringify({ loggedIn: true, checkedAt: now, refreshedAt: now, method: 'browser', demo: Boolean(info.demo), history });
+  const meta = JSON.stringify({ loggedIn: true, checkedAt: now, refreshedAt: now, method: info.method === 'extension' ? 'extension' : 'browser', demo: Boolean(info.demo), history });
   db.prepare(`INSERT INTO accounts (user_id, platform, username, display_name, avatar, meta, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(user_id, platform) DO UPDATE SET username = COALESCE(excluded.username, username),
@@ -149,6 +151,8 @@ export async function refreshSession(userId, platform, { why = 'Background keep-
 /** Check the saved session (the "Check" button): really loads the platform, and refreshes the login. */
 export async function checkLogin(user, platform) {
   if (dryRun() && getAccount(user.id, platform)?.demo) return getAccount(user.id, platform);
+  // Logins in the user's own Chrome are checked by the extension each time it posts, not by the server.
+  if (getAccount(user.id, platform)?.method === 'extension') return getAccount(user.id, platform);
   if (profileBusy(user.id, platform)) return getAccount(user.id, platform);
   await refreshSession(user.id, platform, { why: 'Check' });
   return getAccount(user.id, platform) || { platform, loggedIn: false };
@@ -164,7 +168,7 @@ export async function refreshDueSessions({ force = false } = {}) {
   if (!browserAvailable()) return [];
   const due = db.prepare('SELECT user_id, platform, meta FROM accounts').all().filter((r) => {
     const m = json(r.meta, {});
-    return DRIVERS[r.platform] && m.loggedIn !== false && !m.demo && (force || Date.now() - (m.refreshedAt || 0) > KEEPALIVE_HOURS * 3600000);
+    return DRIVERS[r.platform] && m.loggedIn !== false && !m.demo && m.method !== 'extension' && (force || Date.now() - (m.refreshedAt || 0) > KEEPALIVE_HOURS * 3600000);
   });
   const results = [];
   // One at a time, skipping profiles that are posting or logging in right now.
@@ -265,6 +269,7 @@ router.get('/api/accounts', (req, res) => {
   res.json({
     demo: dryRun(),
     keepAliveHours: KEEPALIVE_HOURS > 0 ? KEEPALIVE_HOURS : null,
+    extension: db.prepare('SELECT id, name, version, created_at AS createdAt, last_seen_at AS lastSeenAt FROM ext_links WHERE user_id = ? ORDER BY COALESCE(last_seen_at, created_at) DESC').all(req.user.id),
     browser: { available: browserAvailable(), path: browserExecutable() ? path.basename(browserExecutable()) : null, canShowWindow: canShowWindow() },
     accounts: Object.values(DRIVERS).map((d) => {
       const a = getAccount(req.user.id, d.id);
@@ -272,7 +277,7 @@ router.get('/api/accounts', (req, res) => {
       return {
         platform: d.id, label: d.label, connected: Boolean(a?.loggedIn), loggedIn: Boolean(a?.loggedIn), known: Boolean(a),
         username: a?.username || null, displayName: a?.displayName || null, avatar: a?.avatar || null,
-        checkedAt: a?.checkedAt || null, demo: Boolean(a?.demo), loggedOutReason: a?.loggedOutReason || null, history: a?.history || [], session: s ? { id: s.id, kind: s.kind, step: s.step } : null,
+        checkedAt: a?.checkedAt || null, demo: Boolean(a?.demo), loggedOutReason: a?.loggedOutReason || null, history: a?.history || [], method: a?.method || null, session: s ? { id: s.id, kind: s.kind, step: s.step } : null,
       };
     }),
   });

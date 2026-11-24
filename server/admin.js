@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { db, CLIPS_DIR, RESTORE_FILE, applySettings, userSettings, serverWatchAllowed } from './db.js';
+import { db, CLIPS_DIR, HISTORY_THUMBS_DIR, RESTORE_FILE, applySettings, userSettings, serverWatchAllowed } from './db.js';
 import { hashPassword, requireAdmin } from './auth.js';
 import { stopUser, syncUser, queueCommand, watchingOverview } from './watch/manager.js';
 import { removeUserBrowserData } from './social/index.js';
@@ -111,6 +111,7 @@ router.delete('/users/:id', async (req, res) => {
   await removeUserBrowserData(u.id);
   db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
   fs.rmSync(path.join(CLIPS_DIR, String(u.id)), { recursive: true, force: true });
+  fs.rmSync(path.join(HISTORY_THUMBS_DIR, String(u.id)), { recursive: true, force: true });
   res.json({ ok: true });
 });
 

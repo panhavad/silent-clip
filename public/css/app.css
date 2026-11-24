@@ -475,3 +475,10 @@ body:has(.modal-back) { overflow: hidden; }
 .badge.published { background: var(--ok); color: #06210f; }
 .clip-card .deletes-note { color: var(--warn); display: flex; align-items: center; gap: 4px; }
 .clip-card .deletes-note svg { width: 13px; height: 13px; }
+.chip.gone { background: rgba(255, 255, 255, .08); color: var(--muted); padding: 0 6px; font-size: 10px; }
+.post-card.clip-gone .thumb-mini { filter: grayscale(.7); opacity: .75; }
+.ext-box { margin-top: 8px; padding: 10px 12px; border: 1px dashed var(--accent-2); border-radius: 10px; display: grid; gap: 6px; }
+.ext-box ol { margin: 6px 0; padding-left: 18px; display: grid; gap: 3px; }
+.ext-box .row svg { width: 16px; height: 16px; }
+.account[data-p=youtube] { grid-column: 1 / -1; flex-wrap: wrap; }
+.account .ext-box { flex: 1 1 100%; }

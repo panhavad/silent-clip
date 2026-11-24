@@ -106,7 +106,9 @@ export const youtube = {
     await waitForAny({
       done: async () => !/uploading/i.test((await progress.textContent({ timeout: 2000 })) || ''),
     }, { timeout: 20 * 60000, every: 2000, what: 'the YouTube upload to finish' });
-    const errorText = await page.locator('ytcp-uploads-dialog #error-message').first().textContent({ timeout: 1000 }).catch(() => '');
+    // Studio keeps a hidden error placeholder in the dialog; only a visible one is a real error.
+    const errorBox = page.locator('ytcp-uploads-dialog #error-message').first();
+    const errorText = await errorBox.isVisible().catch(() => false) ? await errorBox.textContent({ timeout: 1000 }).catch(() => '') : '';
     if (errorText?.trim()) throw new Error(`YouTube: ${errorText.trim()}`);
 
     step('Publishing');

@@ -279,10 +279,10 @@ export class ScheduleView {
 
   card(p) {
     const m = PLATFORM_META[p.platform];
-    return `<div class="post-card ${p.status}" data-id="${p.id}" draggable="${p.status === 'scheduled'}" title="${esc(p.clip?.title || '')}">
+    return `<div class="post-card ${p.status}${p.clipDeleted ? ' clip-gone' : ''}" data-id="${p.id}" draggable="${p.status === 'scheduled'}" title="${esc(p.clip?.title || '')}${p.clipDeleted ? ' (clip deleted, kept as history)' : ''}">
       <div class="thumb-mini lazy-bg" data-bg="${esc(p.clip?.thumbUrl || '')}"></div>
       <div style="min-width:0">
-        <div class="row small" style="gap:6px"><span class="plat ${p.platform}">${m.icon}</span><b>${hhmm(p.publishedAt || p.scheduledAt)}</b>${p.source === 'auto' ? '<span class="chip auto">auto</span>' : ''}</div>
+        <div class="row small" style="gap:6px"><span class="plat ${p.platform}">${m.icon}</span><b>${hhmm(p.publishedAt || p.scheduledAt)}</b>${p.source === 'auto' ? '<span class="chip auto">auto</span>' : ''}${p.clipDeleted ? '<span class="chip gone">deleted</span>' : ''}</div>
         <div class="pc-title">${esc(p.clip?.title || '')}</div>
         <div class="small st">${STATUS[p.status] || p.status}${p.clip?.score != null ? ` · ${icon('flame')}${p.clip.score}` : ''}</div>
       </div></div>`;
@@ -298,22 +298,23 @@ export class ScheduleView {
         <div style="display:grid;gap:4px"><b>${esc(p.clip?.title || '')}</b><span class="small muted">${esc(p.clip?.streamer || '')} · ${icon('flame')}${p.clip?.score ?? '–'} · ${p.source === 'auto' ? 'auto-scheduled' : 'manual'}</span>
         <span class="small">${STATUS[p.status]} · ${p.status === 'publishing' && p.step ? esc(p.step) : new Date(p.publishedAt || p.scheduledAt).toLocaleString()}</span>
         ${p.url ? `<a class="small" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}${icon('external')}</a>` : ''}
-        ${p.error ? `<span class="small" style="color:var(--bad)">${esc(p.error)}</span>` : ''}</div></div>
+        ${p.error ? `<span class="small" style="color:var(--bad)">${esc(p.error)}</span>` : ''}
+        ${p.clipDeleted ? '<span class="small muted">The clip was deleted from the library. This entry is kept as history.</span>' : ''}</div></div>
       ${p.screenshotUrl ? `<a href="${p.screenshotUrl}" target="_blank" rel="noopener" title="What the browser showed when it failed"><img src="${p.screenshotUrl}" alt="Browser screenshot at the failure" loading="lazy" decoding="async" style="width:100%;border-radius:10px;border:1px solid var(--border)"></a>` : ''}
       ${p.status === 'scheduled' ? `<div class="row"><input type="datetime-local" class="when" value="${localInput(p.scheduledAt)}"><button class="btn sm resched">Reschedule</button></div>` : ''}
       <div class="row wrap">
         ${p.sessionId ? `<button class="btn sm primary watch">${icon('eye')}Watch</button>` : ''}
         ${p.status === 'scheduled' ? `<button class="btn sm primary now">${icon('upload')}Post now</button>` : ''}
-        ${p.status === 'failed' ? `<button class="btn sm primary retry">${icon('refresh')}Retry</button>` : ''}
-        <button class="btn sm open">Open clip</button><span class="spacer"></span>
-        ${p.status !== 'publishing' ? `<button class="btn sm danger del">${p.status === 'scheduled' ? 'Unschedule' : 'Remove'}</button>` : ''}
+        ${p.status === 'failed' && !p.clipDeleted ? `<button class="btn sm primary retry">${icon('refresh')}Retry</button>` : ''}
+        ${p.clipDeleted ? '' : '<button class="btn sm open">Open clip</button>'}<span class="spacer"></span>
+        ${p.status !== 'publishing' ? `<button class="btn sm danger del">${p.status === 'scheduled' ? 'Unschedule' : 'Remove from history'}</button>` : ''}
       </div></div>`;
     document.body.append(back);
     const close = () => { back.remove(); this.renderCalendar(); };
     const q = (s) => back.querySelector(s);
     back.onclick = (e) => { if (e.target === back) close(); };
     q('.x').onclick = close;
-    q('.open').onclick = () => { back.remove(); this.onOpenClip(p.clipId); };
+    if (q('.open')) q('.open').onclick = () => { back.remove(); this.onOpenClip(p.clipId); };
     if (q('.watch')) q('.watch').onclick = () => openBrowserViewer({ sessionId: p.sessionId, mode: 'watch', title: `Posting to ${m.label}` });
     const act = async (fn, msg) => { try { await fn(); toast(msg, 'ok'); close(); } catch (e) { toast(e.message, 'error'); } };
     if (q('.resched')) q('.resched').onclick = () => act(() => api(`/api/posts/${p.id}`, { method: 'PATCH', body: { scheduledAt: new Date(q('.when').value).getTime() } }), 'Rescheduled');

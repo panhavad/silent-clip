@@ -4,7 +4,8 @@ import express from 'express';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, CLIPS_DIR, userSettings } from './db.js';
+import { db, CLIPS_DIR, HISTORY_THUMBS_DIR, userSettings } from './db.js';
+import { pruneHistoryThumb } from './store.js';
 import { DRIVERS, connectedPlatforms, getAccount, publishWithBrowser, saveShot, SHOTS_DIR } from './social/index.js';
 import { sleep } from './social/human.js';
 import { slotsForDay, dayKeyOf, toMinutes } from '../public/js/engine/slots.js';
@@ -107,10 +108,15 @@ function postRow(r) {
     attempts: r.attempts, error: r.error, url: r.url, publishedAt: r.published_at,
     step: live?.step || r.step || null, sessionId: live?.sessionId || null,
     screenshotUrl: r.shot ? `/api/posts/${r.id}/screenshot` : null,
-    clip: r.title !== undefined ? {
+    clipDeleted: r.title === null && r.clip_title !== undefined,
+    clip: r.title !== undefined ? (r.title !== null ? {
       title: r.title, streamer: r.streamer_login, score: json(r.viral, {}).score ?? null,
       thumbUrl: r.thumb_file ? `/api/clips/${r.clip_id}/thumb` : null,
-    } : undefined,
+    } : {
+      // The clip was deleted: show what was saved from it.
+      title: r.clip_title || '(deleted clip)', streamer: r.clip_streamer || '', score: r.clip_score ?? null,
+      thumbUrl: r.clip_thumb ? `/api/posts/${r.id}/thumb` : null,
+    }) : undefined,
   };
 }
 
@@ -130,6 +136,9 @@ async function demoPublish(platform, clipId, step) {
 
 const inFlight = new Set();
 const busyProfiles = new Set();
+
+export const EXT_WAITING = 'Waiting for your Chrome (SlientClip extension)';
+export const viaExtension = (userId, platform) => getAccount(userId, platform)?.method === 'extension';
 
 async function publishOne(post) {
   inFlight.add(post.id);
@@ -151,25 +160,14 @@ async function publishOne(post) {
     const result = dryRun() || acc.demo
       ? await demoPublish(post.platform, post.clip_id, step)
       : await publishWithBrowser({ user, platform: post.platform, file, clip, onStep: step, onSession: (id) => { live.sessionId = id; } });
-    const now = Date.now();
-    db.prepare("UPDATE posts SET status = 'published', url = ?, external_id = ?, published_at = ?, finished_at = ?, error = NULL, step = 'Posted' WHERE id = ?")
-      .run(result.url || null, result.externalId || null, now, now, post.id);
-    const posted = json(clipRow.posted, {});
-    posted[post.platform] = { at: now, url: result.url || null };
-    db.prepare('UPDATE clips SET posted = ? WHERE id = ?').run(JSON.stringify(posted), clipRow.id);
+    recordPublished(post, result);
   } catch (e) {
-    const attempts = post.attempts + 1;
     // A busy profile (user is logging in) doesn't count as a failed attempt.
     if (e.busy) {
       db.prepare("UPDATE posts SET status = 'scheduled', attempts = attempts - 1, scheduled_at = ?, step = ? WHERE id = ?").run(Date.now() + 60000, 'Waiting: the account browser is in use', post.id);
       return;
     }
-    const retry = !e.final && attempts < 3;
-    const shot = saveShot(post.id, e.screenshot) ? 1 : 0;
-    db.prepare('UPDATE posts SET status = ?, scheduled_at = ?, error = ?, shot = ?, step = ?, finished_at = ? WHERE id = ?')
-      .run(retry ? 'scheduled' : 'failed', retry ? Date.now() + attempts * 5 * 60000 : post.scheduled_at,
-        `${String(e.message || e).slice(0, 480)}${retry ? ` (retrying, attempt ${attempts}/3)` : ''}`, shot, live.step, Date.now(), post.id);
-    console.error(`publish ${post.platform} ${post.id} failed:`, e.message);
+    recordFailure(post, e, { attempts: post.attempts + 1, step: live.step, shot: saveShot(post.id, e.screenshot) ? 1 : 0 });
   } finally {
     inFlight.delete(post.id);
     busyProfiles.delete(profile);
@@ -177,16 +175,42 @@ async function publishOne(post) {
   }
 }
 
+/** A post went out: store its link and mark the clip as posted on that platform. */
+export function recordPublished(post, result = {}) {
+  const now = Date.now();
+  db.prepare("UPDATE posts SET status = 'published', url = ?, external_id = ?, published_at = ?, finished_at = ?, error = NULL, step = 'Posted' WHERE id = ?")
+    .run(result.url || null, result.externalId || null, now, now, post.id);
+  const clipRow = db.prepare('SELECT posted FROM clips WHERE id = ?').get(post.clip_id);
+  if (!clipRow) return;
+  const posted = json(clipRow.posted, {});
+  posted[post.platform] = { at: now, url: result.url || null };
+  db.prepare('UPDATE clips SET posted = ? WHERE id = ?').run(JSON.stringify(posted), post.clip_id);
+}
+
+/** A post attempt failed: retry later (up to 3 attempts) unless the error is final. */
+export function recordFailure(post, e, { attempts, step = null, shot = 0 } = {}) {
+  const retry = !e.final && attempts < 3;
+  db.prepare('UPDATE posts SET status = ?, scheduled_at = ?, error = ?, shot = ?, step = ?, finished_at = ? WHERE id = ?')
+    .run(retry ? 'scheduled' : 'failed', retry ? Date.now() + attempts * 5 * 60000 : post.scheduled_at,
+      `${String(e.message || e).slice(0, 480)}${retry ? ` (retrying, attempt ${attempts}/3)` : ''}`, shot, step, Date.now(), post.id);
+  console.error(`publish ${post.platform} ${post.id} failed:`, e.message || e);
+}
+
 let ticking = false;
 export async function runDuePosts({ wait = false } = {}) {
   if (ticking) return;
   ticking = true;
   try {
-    const due = db.prepare("SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at LIMIT 20").all(Date.now());
+    const due = db.prepare("SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at LIMIT 200").all(Date.now());
     const jobs = [];
     const claimed = new Set(busyProfiles);
     for (const p of due) {
       if (inFlight.size + jobs.length >= MAX_BROWSERS) break;
+      // Posts for an account connected through the Chrome extension are picked up by the user's own browser.
+      if (viaExtension(p.user_id, p.platform)) {
+        db.prepare('UPDATE posts SET step = ? WHERE id = ? AND step IS NOT ?').run(EXT_WAITING, p.id, EXT_WAITING);
+        continue;
+      }
       const profile = `${p.user_id}:${p.platform}`;
       // One browser per account at a time; the next post for it waits for the following tick.
       if (inFlight.has(p.id) || claimed.has(profile)) continue;
@@ -269,7 +293,8 @@ router.put('/api/autopublish', (req, res) => {
   res.json(next);
 });
 
-const postQuery = `SELECT p.*, c.title, c.streamer_login, c.viral, c.thumb_file FROM posts p JOIN clips c ON c.id = p.clip_id`;
+// LEFT JOIN: posts of a deleted clip stay in the schedule as history (c.title is then NULL).
+const postQuery = `SELECT p.*, c.title, c.streamer_login, c.viral, c.thumb_file FROM posts p LEFT JOIN clips c ON c.id = p.clip_id`;
 
 router.get('/api/posts', (req, res) => {
   const from = Number(req.query.from) || 0;
@@ -319,6 +344,12 @@ router.get('/api/posts/:id/screenshot', (req, res) => {
   res.set('Cache-Control', 'no-store').sendFile(path.join(SHOTS_DIR, `${p.id}.jpg`));
 });
 
+router.get('/api/posts/:id/thumb', (req, res) => {
+  const p = ownPost(req);
+  if (!p?.clip_thumb) return res.status(404).end();
+  res.set('Cache-Control', 'private, max-age=86400').sendFile(path.join(HISTORY_THUMBS_DIR, String(p.user_id), p.clip_thumb), (e) => { if (e && !res.headersSent) res.status(404).end(); });
+});
+
 router.patch('/api/posts/:id', (req, res) => {
   const p = ownPost(req);
   if (!p) return res.status(404).json({ error: 'Not found' });
@@ -333,6 +364,7 @@ router.patch('/api/posts/:id', (req, res) => {
 router.post('/api/posts/:id/retry', (req, res) => {
   const p = ownPost(req);
   if (!p) return res.status(404).json({ error: 'Not found' });
+  if (!db.prepare('SELECT 1 FROM clips WHERE id = ?').get(p.clip_id)) return res.status(409).json({ error: 'The clip was deleted, so it can\'t be posted again. This entry is kept as history.' });
   db.prepare("UPDATE posts SET status = 'scheduled', scheduled_at = ?, attempts = 0, error = NULL, shot = 0, step = NULL WHERE id = ?").run(Date.now(), p.id);
   runDuePosts();
   res.json({ ok: true });
@@ -343,6 +375,7 @@ router.delete('/api/posts/:id', (req, res) => {
   if (!p) return res.status(404).json({ error: 'Not found' });
   if (p.status === 'scheduled') db.prepare("UPDATE posts SET status = 'canceled' WHERE id = ?").run(p.id);
   else if (p.status !== 'publishing') db.prepare('DELETE FROM posts WHERE id = ?').run(p.id);
+  pruneHistoryThumb(p.user_id, p.clip_id);
   planUser(req.user.id);
   res.json({ ok: true });
 });

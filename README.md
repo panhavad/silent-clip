@@ -94,6 +94,21 @@ Safety rules:
 
 If a platform refuses the login in an automated browser (Google sometimes shows "This browser or app may not be secure"), log in on your own browser, export that site's cookies with the *Cookie-Editor* extension (**Export → JSON**), and use the upload button next to the account to import them. Export from a separate browser profile or a private window and close it without signing out: if the same Google login keeps being used in your everyday browser, Google rotates its cookies there and signs the imported copy out.
 
+### YouTube from your own Chrome (SlientClip extension) — recommended
+
+If YouTube logins on the server keep expiring, let your own Chrome do the uploading instead. The **SlientClip Publisher** extension (`extension/` in this repo, or **Settings → Social accounts → YouTube → Download extension**) uploads Shorts from the Chrome where you're already signed in to YouTube, so no YouTube login is kept on the server at all.
+
+1. Download the extension zip and unzip it. In Chrome open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and pick the `slientclip-extension` folder.
+2. Make sure that Chrome is signed in to YouTube with the channel you want to post to.
+3. Open SlientClip in that Chrome, click the **SlientClip Publisher** toolbar icon and press **Connect this SlientClip tab**. The YouTube account switches to *through your Chrome*.
+
+From then on, **Post now**, scheduled posts and auto-publish for YouTube are handed to the extension. Every 30 seconds it checks for due posts, opens YouTube Studio in a background tab, uploads the clip, types the title, description and hashtags, sets the audience and your visibility setting, presses Publish and reports the link back. The post shows each step live, like server posts. Keep Chrome open for scheduled posts; anything due while Chrome was closed goes out within a minute of opening it.
+
+- Same safety rules as the server browser: failures before Publish are retried (up to 3 times), failures after pressing Publish are not, and an upload that stops reporting for 15 minutes (`EXT_STALE_MIN`) is marked failed.
+- If YouTube is signed out in that Chrome, the post fails with "sign in on youtube.com" and Settings flags the account. Signing in again and pressing **Check now** in the popup reconnects it.
+- The popup shows the connection, the YouTube account it found and recent activity. **Disconnect** (popup or Settings) revokes its token. The extension talks to SlientClip with that token only, and to YouTube only through its own tabs.
+- `PUBLISH_DRY_RUN=true` makes the extension stop before Publish, which leaves a draft in YouTube Studio.
+
 Notes: the Docker image includes Chromium. `npm run dev` finds an installed Chrome or Edge, or you can set `BROWSER_PATH`. Platforms change their pages from time to time; when that breaks a step, the failure screenshot shows where. Automated posting may be against a platform's terms, so use your own accounts responsibly.
 
 Set `PUBLISH_DRY_RUN=true` to try posting, scheduling and auto-publish safely: logins still open the real browser, but posts are simulated and marked *Demo mode*.
@@ -128,6 +143,7 @@ The running release is shown as a badge next to the logo (hover it for the commi
 3. When chat explodes, the card shows *Capturing → Rendering 9:16 → Saved*. **Clip now** captures manually.
 4. **Clips** → each card has **YouTube / TikTok / Instagram** buttons: one click (and a confirm) posts the clip right away. If that account isn't logged in yet, the login opens first, and the button shows whether the clip is posting, scheduled or already posted. Open a clip to tweak title/description/hashtags/caption (re-render), or to **Schedule** a post (or *post manually* if the account isn't linked). Downloaded/posted clips leave the *New* list.
    - **Select** (Clips toolbar) turns on checkboxes: tick clips or **Select all** in the current tab (New / All / Downloaded / Posted), then **Delete** them or **Mark published**. Published clips (ones you posted yourself) move to *Posted*, are never auto-posted or scheduled again, and are deleted automatically 24 hours later (`PUBLISHED_TTL_HOURS`). **Unmark** keeps a clip.
+   - Deleting a clip (by hand, by the 24 h clean-up or by the storage limit) keeps its **Schedule history**: published and failed posts stay in the calendar with the clip's title, streamer, score and thumbnail, tagged *deleted*. Posts that were still waiting to go out are dropped.
 5. **Schedule** → turn on **Auto-publish**. Per platform, choose **Random times** (e.g. *4 videos a day between 09:00 and 23:00*; the times are picked for you, spread over the window and different each day) or **Fixed times**, then the days and a minimum viral score. The calendar shows what goes out when; drag a post to another day, or click it to post now, reschedule, retry or unschedule.
 
 ### Accounts & administration

@@ -12,6 +12,7 @@ import { masterPlaylist } from './twitch.js';
 import { router as publisher, startScheduler, planUser } from './publisher.js';
 import { router as socialRouter, startSessionKeepAlive } from './social/index.js';
 import { closeAllSessions } from './social/browser.js';
+import { router as extensionRouter, startExtensionSweeper } from './extension.js';
 import { router as admin } from './admin.js';
 import { router as backup } from './backup.js';
 import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
@@ -84,6 +85,8 @@ app.post('/api/auth/login', (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => { destroySession(req, res); res.json({ ok: true }); });
 
+// The Chrome extension authenticates with its own token, so its API sits before the session check.
+app.use(extensionRouter);
 app.use('/api', requireUser);
 // Social accounts (logged-in browser sessions + live viewer), publishing queue and auto-publish schedule.
 app.use(socialRouter);
@@ -337,6 +340,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   startServerWatchers();
   startSessionKeepAlive();
   startClipJanitor();
+  startExtensionSweeper();
   // Docker stops/redeploys with SIGTERM. Close the social browsers cleanly first: a killed Chrome loses the
   // login cookies Google rotated in the last minute, and reusing the old ones makes Google sign it out.
   let stopping = false;

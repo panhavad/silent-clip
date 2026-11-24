@@ -100,7 +100,7 @@ export class ClipLibrary {
     const ids = [...this.selected];
     if (!ids.length) return;
     const n = ids.length === 1 ? '1 clip' : `${ids.length} clips`;
-    if (action === 'delete' && !confirm(`Delete ${n}? The videos are removed from the server and any scheduled posts of them are canceled. This can't be undone.`)) return;
+    if (action === 'delete' && !confirm(`Delete ${n}? The videos are removed from the server and posts still waiting to go out are canceled. Past posts stay in the Schedule as history. This can't be undone.`)) return;
     if (action === 'published' && !confirm(`Mark ${n} as published?\n\nThey are taken off the auto-post schedule and deleted automatically after 24 hours.`)) return;
     const r = await api('/api/clips/bulk', { method: 'POST', body: { action, ids } });
     const verb = { delete: 'Deleted', published: 'Marked as published', unpublished: 'Unmarked' }[action];

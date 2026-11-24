@@ -2,7 +2,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, CLIPS_DIR } from './db.js';
+import { db, CLIPS_DIR, HISTORY_THUMBS_DIR } from './db.js';
 import { onClipCreated } from './publisher.js';
 
 const json = (s, fb) => { try { return JSON.parse(s); } catch { return fb; } };
@@ -53,11 +53,33 @@ export function dirSize(dir) {
 
 const fileSize = (dir, f) => { try { return f ? fs.statSync(path.join(dir, f)).size : 0; } catch { return 0; } };
 
-/** Delete a clip's files and row (its posts go with it). */
+/**
+ * Delete a clip's files and row. Its schedule history (published / failed posts) is kept with a snapshot of the
+ * clip's title, streamer, score and thumbnail; posts that were still waiting to go out are dropped.
+ */
 export function removeClip(row) {
   const dir = userDir(row.user_id);
+  const history = db.prepare("SELECT COUNT(*) n FROM posts WHERE clip_id = ? AND status IN ('published', 'failed', 'publishing')").get(row.id).n;
+  if (history) {
+    let thumb = null;
+    if (row.thumb_file && fs.existsSync(path.join(dir, row.thumb_file))) {
+      const tdir = path.join(HISTORY_THUMBS_DIR, String(row.user_id));
+      fs.mkdirSync(tdir, { recursive: true });
+      thumb = `${row.id}.jpg`;
+      try { fs.copyFileSync(path.join(dir, row.thumb_file), path.join(tdir, thumb)); } catch { thumb = null; }
+    }
+    db.prepare('UPDATE posts SET clip_title = ?, clip_streamer = ?, clip_score = ?, clip_thumb = ? WHERE clip_id = ?')
+      .run(row.title || '', row.streamer_login || '', json(row.viral, {}).score ?? null, thumb, row.id);
+  }
+  db.prepare("DELETE FROM posts WHERE clip_id = ? AND status NOT IN ('published', 'failed', 'publishing')").run(row.id);
   for (const f of [row.video_file, row.thumb_file, row.source_file]) if (f) fs.rmSync(path.join(dir, f), { force: true });
   db.prepare('DELETE FROM clips WHERE id = ?').run(row.id);
+}
+
+/** Drop a deleted clip's saved thumbnail once no history entry uses it any more. */
+export function pruneHistoryThumb(userId, clipId) {
+  if (db.prepare('SELECT 1 FROM clips WHERE id = ?').get(clipId) || db.prepare('SELECT 1 FROM posts WHERE clip_id = ?').get(clipId)) return;
+  fs.rmSync(path.join(HISTORY_THUMBS_DIR, String(userId), `${clipId}.jpg`), { force: true });
 }
 
 export function storageUsage(userId) {

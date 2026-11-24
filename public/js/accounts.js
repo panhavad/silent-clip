@@ -16,6 +16,33 @@ export async function getAccounts(force = false) {
 }
 export const accountFor = (accounts, platform) => accounts.accounts.find((a) => a.platform === platform);
 
+/** "Post from your own Chrome": the SlientClip extension uploads to YouTube from the user's signed-in Chrome. */
+function extensionBox(a, links) {
+  const seen = links[0]?.lastSeenAt;
+  const online = seen && Date.now() - seen < 3 * 60000;
+  const inUse = a.method === 'extension';
+  return `<div class="ext-box">
+    <div class="row" style="gap:8px">${icon('monitor')}<b>Post from your own Chrome</b><span class="badge ${inUse ? 'done' : ''}">${inUse ? 'In use' : 'Recommended'}</span></div>
+    <div class="small muted">The SlientClip extension uploads Shorts from the Chrome where you're already signed in to YouTube, so the login never expires here.</div>
+    ${links.length ? `<div class="small row" style="gap:8px">Extension <b style="color:${online ? 'var(--ok)' : 'var(--warn)'}">${online ? 'online' : 'offline'}</b> · last seen ${seen ? timeAgo(seen) : 'never'}${links[0].version ? ` · v${esc(links[0].version)}` : ''}
+      <button class="btn sm ghost ext-unlink" data-id="${esc(links[0].id)}">Disconnect</button></div>` : ''}
+    <details class="small"${links.length ? '' : ' open'}><summary>${links.length ? 'Setup steps' : 'Set it up (2 minutes)'}</summary><ol>
+      <li><a href="/extension.zip" download>Download the extension</a> and unzip it.</li>
+      <li>In Chrome open <code>chrome://extensions</code>, turn on <b>Developer mode</b>, press <b>Load unpacked</b> and pick the unzipped <code>slientclip-extension</code> folder.</li>
+      <li>Check that this Chrome is signed in to YouTube with the channel you want to post to.</li>
+      <li>Come back to this page, click the <b>SlientClip Publisher</b> icon in Chrome's toolbar and press <b>Connect this SlientClip tab</b>.</li>
+    </ol>Keep Chrome open: posts are uploaded within a minute of their time, in a background tab.</details>
+    <div><a class="btn sm" href="/extension.zip" download>${icon('download')}Download extension</a></div>
+  </div>`;
+}
+
+// The extension's popup tells the page when it has connected, so the panel updates without a reload.
+let accountsRoot = null;
+window.addEventListener('slientclip-extension-connected', () => {
+  cache = null;
+  if (accountsRoot?.isConnected) renderAccounts(accountsRoot).catch(() => {});
+});
+
 /** Open the server browser on the platform's login page; calls onDone after "I'm logged in" (or a demo login). */
 export async function loginTo(platform, onDone) {
   const r = await api(`/api/accounts/${platform}/login`, { method: 'POST' });
@@ -28,6 +55,7 @@ export async function loginTo(platform, onDone) {
 }
 
 export async function renderAccounts(root) {
+  accountsRoot = root;
   // First render shows a skeleton; re-renders after an action keep the current panel until fresh data arrives.
   const first = !root.querySelector('.accounts');
   const idle = first ? showLoading(root, skeleton.accounts()) : () => {};
@@ -50,7 +78,7 @@ export async function renderAccounts(root) {
       const m = PLATFORM_META[a.platform];
       const who = a.displayName || a.username;
       const state = a.loggedIn
-        ? `Logged in${who ? ` as <b style="color:var(--text)">${esc(who)}</b>` : ''}${a.username && a.username !== who ? ` · @${esc(a.username)}` : ''}${a.checkedAt ? ` · checked ${timeAgo(a.checkedAt)}` : ''}`
+        ? `Logged in${who ? ` as <b style="color:var(--text)">${esc(who)}</b>` : ''}${a.username && a.username !== who ? ` · @${esc(a.username)}` : ''}${a.method === 'extension' ? ' · <span style="color:var(--accent-2)">through your Chrome</span>' : ''}${a.checkedAt ? ` · checked ${timeAgo(a.checkedAt)}` : ''}`
         : a.known ? `<span style="color:var(--warn)">Session expired. Log in again.</span>${a.loggedOutReason ? `<div class="small muted" title="${esc(a.loggedOutReason)}">Why: ${esc(a.loggedOutReason)}${a.checkedAt ? ` (${timeAgo(a.checkedAt)})` : ''}</div>` : ''}` : 'Not logged in';
       return `<div class="account ${a.loggedIn ? 'on' : ''}" data-p="${a.platform}">
         <div class="plat-logo ${m.cls}">${m.icon}</div>
@@ -65,6 +93,7 @@ export async function renderAccounts(root) {
             : `<button class="btn sm primary login" ${b.available || data.demo ? '' : 'disabled'}>${icon('login')}Log in</button>`}
           <label class="btn sm ghost import" title="Import cookies exported from your own browser (Cookie-Editor JSON)">${icon('upload')}<input type="file" accept=".json,application/json" hidden></label>
         </div>
+        ${a.platform === 'youtube' ? extensionBox(a, data.extension || []) : ''}
       </div>`;
     }).join('')}</div>
     <div class="settings-grid" style="margin-top:14px">
@@ -106,6 +135,12 @@ export async function renderAccounts(root) {
       if (!confirm(`Log out of ${label}? The saved browser session is deleted and scheduled auto-posts for it are removed.`)) return;
       await api(`/api/accounts/${p}`, { method: 'DELETE' });
       toast(`Logged out of ${label}`, 'ok');
+      rerender();
+    });
+    el.querySelector('.ext-unlink')?.addEventListener('click', async (e) => {
+      if (!confirm('Disconnect the SlientClip extension? YouTube posts then wait until you connect it again (or log in with the server browser).')) return;
+      await api(`/api/ext/links/${e.currentTarget.dataset.id}`, { method: 'DELETE' });
+      toast('Extension disconnected', 'ok');
       rerender();
     });
     el.querySelector('.import input').addEventListener('change', async (e) => {

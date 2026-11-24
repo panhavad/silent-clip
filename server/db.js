@@ -88,7 +88,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS posts (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    clip_id TEXT NOT NULL,
     platform TEXT NOT NULL,
     scheduled_at INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'scheduled',
@@ -98,7 +98,14 @@ db.exec(`
     external_id TEXT,
     url TEXT,
     published_at INTEGER,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    step TEXT,
+    shot INTEGER NOT NULL DEFAULT 0,
+    finished_at INTEGER,
+    clip_title TEXT,
+    clip_streamer TEXT,
+    clip_score REAL,
+    clip_thumb TEXT
   );
   CREATE INDEX IF NOT EXISTS posts_due ON posts(status, scheduled_at);
   CREATE INDEX IF NOT EXISTS posts_user_time ON posts(user_id, scheduled_at);`);
@@ -125,6 +132,37 @@ if (!new Set(db.prepare('PRAGMA table_info(clips)').all().map((c) => c.name)).ha
 if (!postCols.has('step')) db.exec('ALTER TABLE posts ADD COLUMN step TEXT');
 if (!postCols.has('shot')) db.exec('ALTER TABLE posts ADD COLUMN shot INTEGER NOT NULL DEFAULT 0');
 if (!postCols.has('finished_at')) db.exec('ALTER TABLE posts ADD COLUMN finished_at INTEGER');
+// v1.11: the schedule keeps its history after a clip is deleted. Posts used to be deleted with their clip
+// (ON DELETE CASCADE), so the table is rebuilt without that link and with a snapshot of the clip's info.
+if (db.prepare('PRAGMA foreign_key_list(posts)').all().some((f) => f.table === 'clips')) {
+  const keep = ['id', 'user_id', 'clip_id', 'platform', 'scheduled_at', 'status', 'source', 'attempts', 'error', 'external_id',
+    'url', 'published_at', 'created_at', 'step', 'shot', 'finished_at'].join(', ');
+  db.exec(`BEGIN;
+    CREATE TABLE posts_new (
+      id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, clip_id TEXT NOT NULL,
+      platform TEXT NOT NULL, scheduled_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'scheduled', source TEXT NOT NULL DEFAULT 'manual',
+      attempts INTEGER NOT NULL DEFAULT 0, error TEXT, external_id TEXT, url TEXT, published_at INTEGER, created_at INTEGER NOT NULL,
+      step TEXT, shot INTEGER NOT NULL DEFAULT 0, finished_at INTEGER, clip_title TEXT, clip_streamer TEXT, clip_score REAL, clip_thumb TEXT);
+    INSERT INTO posts_new (${keep}) SELECT ${keep} FROM posts;
+    DROP TABLE posts;
+    ALTER TABLE posts_new RENAME TO posts;
+    CREATE INDEX IF NOT EXISTS posts_due ON posts(status, scheduled_at);
+    CREATE INDEX IF NOT EXISTS posts_user_time ON posts(user_id, scheduled_at);
+    COMMIT;`);
+}
+db.exec('CREATE INDEX IF NOT EXISTS posts_clip ON posts(clip_id)');
+// Browsers paired through the SlientClip Chrome extension (they post to YouTube from the user's own Chrome).
+db.exec(`CREATE TABLE IF NOT EXISTS ext_links (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  name TEXT,
+  version TEXT,
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER
+)`);
+// Thumbnails of deleted clips that still appear in the schedule history.
+export const HISTORY_THUMBS_DIR = path.join(DATA_DIR, 'history-thumbs');
 // Accounts used to be OAuth tokens; posting now uses logged-in browser sessions, so old token links are dropped.
 db.prepare('DELETE FROM accounts WHERE access_token IS NOT NULL OR refresh_token IS NOT NULL').run();
 if (!db.prepare("SELECT 1 FROM users WHERE role = 'admin'").get()) {

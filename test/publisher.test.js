@@ -165,3 +165,110 @@ test('bulk select: mark published (off the schedule, deleted after 24 h), unmark
   assert.equal((await call(`/api/clips/${c.id}`)).status, 404);
   assert.equal((await call('/api/clips/bulk', { method: 'POST', body: { action: 'nope', ids: [b.id] } })).status, 400);
 });
+
+test('deleting a clip keeps its past posts in the schedule as history', async () => {
+  const { db } = await import('../server/db.js');
+  const form = new FormData();
+  form.append('meta', JSON.stringify({ streamer: 'shroud', title: 'History clip', viral: { score: 91 } }));
+  form.append('video', new Blob([new Uint8Array(2048)], { type: 'video/mp4' }), 'clip.mp4');
+  form.append('thumb', new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: 'image/jpeg' }), 'thumb.jpg');
+  const clip = (await call('/api/clips', { method: 'POST', form })).data;
+  const done = (await call('/api/posts', { method: 'POST', body: { clipId: clip.id, platform: 'tiktok' } })).data;
+  for (let i = 0; i < 40 && db.prepare('SELECT status FROM posts WHERE id = ?').get(done.id).status !== 'published'; i++) {
+    await runDuePosts({ wait: true });
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const later = (await call('/api/posts', { method: 'POST', body: { clipId: clip.id, platform: 'tiktok', scheduledAt: Date.now() + 86400000 } })).data;
+
+  assert.equal((await call('/api/clips/bulk', { method: 'POST', body: { action: 'delete', ids: [clip.id] } })).data.done, 1);
+  assert.equal((await call(`/api/clips/${clip.id}`)).status, 404);
+  const all = (await call(`/api/posts?from=0&to=${Date.now() + 8 * 86400000}`)).data;
+  const kept = all.find((p) => p.id === done.id);
+  assert.ok(kept, 'the published post is still in the schedule');
+  assert.equal(kept.status, 'published');
+  assert.equal(kept.clipDeleted, true);
+  assert.deepEqual([kept.clip.title, kept.clip.streamer, kept.clip.score], ['History clip', 'shroud', 91]);
+  assert.match(kept.url, /tiktok\.com/);
+  assert.ok(!all.some((p) => p.id === later.id), 'the post still waiting to go out is dropped');
+  const thumb = await realFetch(base + kept.clip.thumbUrl, { headers: { cookie } });
+  assert.equal(thumb.status, 200, 'the thumbnail is kept for the history entry');
+  assert.equal((await call(`/api/posts/${done.id}/retry`, { method: 'POST' })).status, 409);
+
+  await call(`/api/posts/${done.id}`, { method: 'DELETE' });
+  assert.equal((await realFetch(base + kept.clip.thumbUrl, { headers: { cookie } })).status, 404, 'removing the entry cleans up its thumbnail');
+});
+
+test('Chrome extension: pair, take over YouTube, claim a due post, upload and report results', async () => {
+  const { db } = await import('../server/db.js');
+  const { sweepStaleClaims } = await import('../server/extension.js');
+  const ext = async (p, { method = 'GET', body, token } = {}) => {
+    const res = await realFetch(base + p, { method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body && JSON.stringify(body) });
+    return { status: res.status, headers: res.headers, data: res.headers.get('content-type')?.includes('json') ? await res.json() : Buffer.from(await res.arrayBuffer()) };
+  };
+  const { token } = (await call('/api/ext/pair', { method: 'POST', body: { name: 'Chrome' } })).data;
+  assert.ok(token);
+  assert.equal((await ext('/api/ext/jobs')).status, 401, 'no token, no jobs');
+  assert.equal((await ext('/api/ext/jobs', { token: 'nope' })).status, 401);
+  const pre = await ext('/api/ext/jobs', { method: 'OPTIONS' });
+  assert.equal(pre.status, 204);
+  assert.equal(pre.headers.get('access-control-allow-origin'), '*');
+
+  await ext('/api/ext/hello', { method: 'POST', token, body: { youtube: { loggedIn: true, name: 'Tmor Model' }, version: '1.0.0' } });
+  const yt = (await call('/api/accounts')).data.accounts.find((a) => a.platform === 'youtube');
+  assert.deepEqual([yt.connected, yt.method, yt.displayName], [true, 'extension', 'Tmor Model']);
+  assert.equal((await call('/api/accounts')).data.extension[0].version, '1.0.0');
+
+  const clip = await uploadClip('Ext clip', 77);
+  const post = (await call('/api/posts', { method: 'POST', body: { clipId: clip.id, platform: 'youtube' } })).data;
+  await runDuePosts({ wait: true });
+  const waiting = db.prepare('SELECT status, step FROM posts WHERE id = ?').get(post.id);
+  assert.equal(waiting.status, 'scheduled', 'the server leaves it for the extension');
+  assert.match(waiting.step, /SlientClip extension/);
+
+  const { jobs } = (await ext('/api/ext/jobs', { token })).data;
+  const job = jobs.find((j) => j.id === post.id);
+  assert.deepEqual([job.clip.title, job.platform, job.visibility], ['Ext clip', 'youtube', 'public']);
+  assert.equal((await ext(`/api/ext/jobs/${post.id}/claim`, { method: 'POST', token })).status, 200);
+  assert.equal((await ext(`/api/ext/jobs/${post.id}/claim`, { method: 'POST', token })).status, 409, 'claimed only once');
+  await ext(`/api/ext/jobs/${post.id}/step`, { method: 'POST', token, body: { step: 'Uploading video' } });
+  assert.equal(db.prepare('SELECT step FROM posts WHERE id = ?').get(post.id).step, 'Uploading video');
+  assert.equal((await ext(`/api/ext/jobs/${post.id}/video`, { token })).data.length, 2048);
+  await ext(`/api/ext/jobs/${post.id}/result`, { method: 'POST', token, body: { ok: true, url: 'https://www.youtube.com/shorts/abc123XYZ', externalId: 'abc123XYZ' } });
+  const done = (await call(`/api/posts?clipId=${clip.id}`)).data[0];
+  assert.deepEqual([done.status, done.url], ['published', 'https://www.youtube.com/shorts/abc123XYZ']);
+  assert.match((await call(`/api/clips/${clip.id}`)).data.posted.youtube.url, /abc123XYZ/);
+
+  // A failure before Publish is retried; a sign-out is final and flags the account.
+  const p2 = (await call('/api/posts', { method: 'POST', body: { clipId: (await uploadClip('Ext 2', 70)).id, platform: 'youtube' } })).data;
+  await ext(`/api/ext/jobs/${p2.id}/claim`, { method: 'POST', token });
+  await ext(`/api/ext/jobs/${p2.id}/result`, { method: 'POST', token, body: { ok: false, error: 'Timed out waiting for the upload dialog' } });
+  assert.equal(db.prepare('SELECT status FROM posts WHERE id = ?').get(p2.id).status, 'scheduled', 'retried');
+  db.prepare('UPDATE posts SET scheduled_at = ? WHERE id = ?').run(Date.now() - 1000, p2.id);
+  await ext(`/api/ext/jobs/${p2.id}/claim`, { method: 'POST', token });
+  await ext(`/api/ext/jobs/${p2.id}/result`, { method: 'POST', token, body: { ok: false, error: 'YouTube is signed out in this Chrome', loggedOut: true } });
+  assert.equal(db.prepare('SELECT status FROM posts WHERE id = ?').get(p2.id).status, 'failed');
+  const out = (await call('/api/accounts')).data.accounts.find((a) => a.platform === 'youtube');
+  assert.equal(out.loggedIn, false);
+  assert.match(out.loggedOutReason, /signed out in the Chrome/);
+
+  // Signing back in (hello) restores it; an upload that goes quiet is failed by the sweeper.
+  await ext('/api/ext/hello', { method: 'POST', token, body: { youtube: { loggedIn: true, name: 'Tmor Model' } } });
+  const p3 = (await call('/api/posts', { method: 'POST', body: { clipId: (await uploadClip('Ext 3', 70)).id, platform: 'youtube' } })).data;
+  await ext(`/api/ext/jobs/${p3.id}/claim`, { method: 'POST', token });
+  await ext(`/api/ext/jobs/${p3.id}/step`, { method: 'POST', token, body: { step: 'Publishing', final: true } });
+  sweepStaleClaims(Date.now() + 16 * 60000);
+  const p3row = db.prepare('SELECT status, error FROM posts WHERE id = ?').get(p3.id);
+  assert.equal(p3row.status, 'failed', 'pressed Publish then went quiet: not retried');
+  assert.match(p3row.error, /stopped reporting/);
+
+  const zip = await realFetch(`${base}/extension.zip`);
+  const buf = Buffer.from(await zip.arrayBuffer());
+  assert.equal(buf.subarray(0, 2).toString(), 'PK');
+  assert.ok(buf.includes('slientclip-extension/manifest.json') && buf.includes('slientclip-extension/youtube-upload.js'));
+
+  // Disconnecting the extension revokes its token.
+  const link = (await call('/api/ext/links')).data[0];
+  await call(`/api/ext/links/${link.id}`, { method: 'DELETE' });
+  assert.equal((await ext('/api/ext/jobs', { token })).status, 401);
+  await call('/api/accounts/youtube', { method: 'DELETE' });
+});

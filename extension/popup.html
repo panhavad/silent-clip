@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="logo">SC</div>
+    <div><b>SlientClip Publisher</b><div class="muted">Posts your clips to YouTube Shorts from this Chrome</div></div>
+  </header>
+
+  <section id="unpaired" hidden>
+    <p>Open your <b>SlientClip</b> site in this tab, sign in, then press:</p>
+    <button id="connect" class="primary">Connect this SlientClip tab</button>
+    <p class="muted small">YouTube posts will then be uploaded here, with the YouTube account this Chrome is signed in to. Keep Chrome open for scheduled posts.</p>
+  </section>
+
+  <section id="paired" hidden>
+    <div class="row"><span class="label">SlientClip</span><span id="server" class="value"></span></div>
+    <div class="row"><span class="label">Signed in as</span><span id="user" class="value"></span></div>
+    <div class="row"><span class="label">YouTube</span><span id="youtube" class="value"></span></div>
+    <div class="row"><span class="label">Last check</span><span id="lastPoll" class="value"></span></div>
+    <div id="error" class="error" hidden></div>
+    <div class="buttons">
+      <button id="check">Check now</button>
+      <button id="reconnect" title="Connect again from the SlientClip tab that's open now">Reconnect</button>
+      <button id="disconnect" class="danger">Disconnect</button>
+    </div>
+    <h4>Recent activity</h4>
+    <ul id="log"><li class="muted">Nothing yet.</li></ul>
+  </section>
+
+  <div id="message" class="message" hidden></div>
+  <script src="popup.js"></script>
+</body>
+</html>
