@@ -28,6 +28,10 @@ let mode = settings.mode;
 let processing = settings.processing || 'browser';
 const channel = new BroadcastChannel(`slientclip-${me.id}`);
 const windowStatus = new Map();
+// Remembers that watching was started in this browser (and in which mode), across reloads.
+const RUN_KEY = `sc-running-${me.id}`;
+let awaitWindowsUntil = 0; // after a reload in foreground mode: waiting for an open watch window to report
+let foregroundSince = 0;
 
 $('.me-name').textContent = me.name || me.email;
 renderVersion($('.ver'), config.build);
@@ -118,7 +122,17 @@ for (const m of [browserManager, serverManager]) {
 }
 channel.onmessage = ({ data }) => {
   if (data.type === 'clip') library.load();
-  if (data.type === 'win-status') { windowStatus.set(data.login, { ...data, seen: Date.now() }); if (mode === 'foreground' && processing === 'browser') renderForeground(); }
+  if (data.type === 'win-status') {
+    windowStatus.set(data.login, { ...data, seen: Date.now() });
+    // After a reload, a watch window that is still open confirms foreground watching is running.
+    if (!running && awaitWindowsUntil > Date.now() && processing === 'browser') {
+      awaitWindowsUntil = 0;
+      running = true;
+      foregroundSince = Date.now();
+      refreshAutomation();
+    }
+    if (mode === 'foreground' && processing === 'browser' && running) renderForeground();
+  }
 };
 
 const enabled = () => streamers.filter((s) => s.enabled);
@@ -149,7 +163,22 @@ function renderForeground() {
   }).join('');
   $$('.open-one', box).forEach((b) => { b.onclick = () => openWindows([b.dataset.login]); });
 }
-setInterval(() => { if (processing === 'browser' && mode === 'foreground' && running) renderForeground(); }, 5000);
+// Foreground watching runs in pop-up windows. If none of them has reported for a while (all closed),
+// it isn't watching any more, so show it as stopped instead of assuming it still runs.
+const WINDOW_SILENCE_MS = 15000;
+setInterval(() => {
+  if (processing !== 'browser' || mode !== 'foreground' || !running) return;
+  const alive = [...windowStatus.values()].some((w) => Date.now() - w.seen < WINDOW_SILENCE_MS);
+  if (!alive && Date.now() - foregroundSince > WINDOW_SILENCE_MS + 5000) {
+    running = false;
+    localStorage.removeItem(RUN_KEY);
+    $('.monitors').innerHTML = '';
+    refreshAutomation();
+    toast('All watch windows are closed, so watching has stopped.');
+    return;
+  }
+  renderForeground();
+}, 5000);
 
 function setMode(m) {
   mode = m;
@@ -167,6 +196,7 @@ function setProcessingUi() {
 }
 
 async function start() {
+  awaitWindowsUntil = 0;
   if (!enabled().length) { toast('Add at least one streamer first', 'error'); showTab('streamers'); return; }
   if (processing === 'server') {
     try { await serverManager.start(); } catch (e) { toast(e.message, 'error'); return; }
@@ -176,7 +206,7 @@ async function start() {
     return refreshAutomation();
   }
   running = true;
-  localStorage.setItem(`sc-running-${me.id}`, mode);
+  localStorage.setItem(RUN_KEY, mode);
   preloadRenderer().catch((e) => toast(`Renderer failed to load: ${e.message}`, 'error'));
   if (mode === 'background') {
     $('.monitors').innerHTML = '';
@@ -184,6 +214,7 @@ async function start() {
   } else {
     browserManager.stop();
     $('.monitors').innerHTML = '';
+    foregroundSince = Date.now();
     openWindows(enabled().map((s) => s.login));
     renderForeground();
   }
@@ -191,11 +222,12 @@ async function start() {
 }
 
 async function stop() {
+  awaitWindowsUntil = 0;
   if (processing === 'server') {
     try { await serverManager.stop(); } catch (e) { toast(e.message, 'error'); }
     settings.serverRunning = false;
   } else {
-    localStorage.removeItem(`sc-running-${me.id}`);
+    localStorage.removeItem(RUN_KEY);
     browserManager.stop();
     if (mode === 'foreground') channel.postMessage({ type: 'close-all' });
   }
@@ -211,6 +243,7 @@ function refreshAutomation() {
   const where = processing === 'server' ? 'on the server' : `in ${mode} mode`;
   $('.auto-status').textContent = running
     ? `Running ${where} · ${enabled().length} streamer(s) · sensitivity ${settings.sensitivity}/10`
+    : awaitWindowsUntil > Date.now() ? 'Checking for watch windows that are still open…'
     : `Stopped · ${enabled().length} streamer(s) ready`;
   $('.no-streamers').classList.toggle('hidden', streamers.length > 0);
   if (!running && enabled().length) {
@@ -435,15 +468,27 @@ if (processing === 'server') {
     refreshAutomation();
   }
 } else {
-  const resumeMode = localStorage.getItem(`sc-running-${me.id}`);
-  if (resumeMode === 'background' || (!resumeMode && settings.autoStart && settings.mode === 'background' && enabled().length)) {
+  // Only show "watching" when it is known to be running. Watching in this browser lived in the page
+  // that was just closed or reloaded, so it has stopped; never restart it on a guess.
+  const resumeMode = localStorage.getItem(RUN_KEY);
+  if (resumeMode === 'background') {
+    localStorage.removeItem(RUN_KEY);
+    toast('Watching stopped when the page was closed or reloaded. Press Start watching to continue.');
+  } else if (resumeMode === 'foreground') {
+    // Watch windows may still be open: show watching only once one of them reports in.
+    setMode('foreground');
+    awaitWindowsUntil = Date.now() + 8000;
+    refreshAutomation();
+    setTimeout(() => {
+      if (running || awaitWindowsUntil === 0) return;
+      awaitWindowsUntil = 0;
+      localStorage.removeItem(RUN_KEY);
+      refreshAutomation();
+    }, 8500);
+  } else if (settings.autoStart && settings.mode === 'background' && enabled().length) {
+    // Explicitly turned on in Settings (off by default).
     setMode('background');
     start();
-  } else if (resumeMode === 'foreground') {
-    // Windows can't be reopened without a click; show their status instead.
-    running = true;
-    renderForeground();
-    refreshAutomation();
   }
 }
 const hash = location.hash.slice(1);

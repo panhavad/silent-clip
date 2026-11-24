@@ -444,3 +444,17 @@ body:has(.modal-back) { overflow: hidden; }
 .find-cat img, .find-cat-art { width: 100%; aspect-ratio: 52 / 72; object-fit: cover; border-radius: 8px; background: #0a1422; }
 .find-cat-name { font-weight: 700; font-size: 13px; line-height: 1.25; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 640px) { .find-item { flex-wrap: wrap; } .find-cats { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); } }
+
+/* Auto-publish: random posting times */
+.ap-mode button { font-size: 12px; padding: 5px 10px; }
+.ap-random { gap: 8px; }
+.ap-random .per-day { width: 70px; }
+.ap-random input[type=time] { width: 110px; }
+.ap-random .ap-preview { flex-basis: 100%; }
+
+.acct-history { margin-top: 4px; }
+.acct-history summary { cursor: pointer; }
+.acct-history ul { margin: 4px 0 0; padding-left: 16px; max-height: 160px; overflow: auto; }
+.acct-history li { margin: 2px 0; }
+.acct-history li.good::marker { color: var(--ok, #3fb950); }
+.acct-history li.bad::marker { color: var(--warn); }

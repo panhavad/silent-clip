@@ -56,6 +56,7 @@ export async function renderAccounts(root) {
         <div class="plat-logo ${m.cls}">${m.icon}</div>
         <div style="min-width:0;flex:1"><div><b>${m.label}</b></div>
           <div class="small muted">${state}</div>
+          ${a.history?.length ? `<details class="acct-history small"><summary class="muted">Login history (${a.history.length})</summary><ul>${a.history.map((h) => `<li class="${h.ok === false ? 'bad' : h.ok ? 'good' : ''}"><span class="muted">${timeAgo(h.at)}</span> ${esc(h.text)}</li>`).join('')}</ul></details>` : ''}
           ${a.session ? `<div class="small" style="color:var(--accent-2)">${icon('loader', 'spin')} ${esc(a.session.kind === 'post' ? a.session.step : 'Browser open')}</div>` : ''}</div>
         <div class="row acct-actions">
           ${a.loggedIn

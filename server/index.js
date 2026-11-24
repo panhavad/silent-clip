@@ -11,6 +11,7 @@ import {
 import { masterPlaylist } from './twitch.js';
 import { router as publisher, startScheduler } from './publisher.js';
 import { router as socialRouter, startSessionKeepAlive } from './social/index.js';
+import { closeAllSessions } from './social/browser.js';
 import { router as admin } from './admin.js';
 import { router as backup } from './backup.js';
 import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
@@ -311,10 +312,25 @@ app.use((err, _req, res, _next) => {
 });
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  app.listen(PORT, () => console.log(`slientclip ${buildInfo.label} listening on :${PORT}`));
+  const server = app.listen(PORT, () => console.log(`slientclip ${buildInfo.label} listening on :${PORT}`));
   startScheduler();
   startServerWatchers();
   startSessionKeepAlive();
+  // Docker stops/redeploys with SIGTERM. Close the social browsers cleanly first: a killed Chrome loses the
+  // login cookies Google rotated in the last minute, and reusing the old ones makes Google sign it out.
+  let stopping = false;
+  const shutdown = async (sig) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`[shutdown] ${sig}: closing browsers…`);
+    server.close();
+    const timer = setTimeout(() => process.exit(0), 8000);
+    timer.unref();
+    await closeAllSessions().catch((e) => console.error('[shutdown] closing browsers failed:', e.message));
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 export default app;

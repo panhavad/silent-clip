@@ -84,3 +84,49 @@ test('log in (demo), post now, auto-plan and cancel', async () => {
   assert.equal((await call('/api/clips')).data.clips.find((c) => c.id === mid.id).scheduled[0].platform, 'tiktok');
   assert.ok(high);
 });
+
+test('random posting times: N a day inside the window, spread out, stable per day, new each day', async () => {
+  const { slotsForDay, toMinutes } = await import('../public/js/engine/slots.js');
+  const cfg = { mode: 'random', perDay: 4, from: '10:00', to: '22:00' };
+  const day = (k, seed = 's1') => slotsForDay(cfg, { dayKey: k, platform: 'tiktok', seed });
+  const a = day('2026-11-24');
+  assert.equal(a.length, 4);
+  assert.deepEqual(day('2026-11-24'), a, 'same day + seed = same times (the planner re-runs often)');
+  assert.notDeepEqual(day('2026-11-25'), a, 'a different day gets different times');
+  assert.notDeepEqual(day('2026-11-24', 's2'), a, 'shuffling (new seed) changes them');
+  const mins = a.map(toMinutes);
+  assert.ok(mins.every((m) => m >= 600 && m < 1320), `inside 10:00-22:00: ${a}`);
+  for (let i = 1; i < mins.length; i++) assert.ok(mins[i] - mins[i - 1] >= 50, `spread out: ${a}`); // shares are 180 min; >= 30% apart
+  assert.notEqual(new Set(a.map((t) => t.slice(3))).size, 1, 'not all on the same minute mark');
+  assert.deepEqual(slotsForDay({ mode: 'times', times: ['09:00'] }, { dayKey: '2026-11-24', platform: 'x' }), ['09:00']);
+});
+
+test('auto-publish in random mode plans N posts a day at system-picked times', async () => {
+  for (let i = 0; i < 6; i++) await uploadClip(`R${i}`, 70 + i);
+  const bad = await call('/api/autopublish', { method: 'PUT', body: { platforms: { tiktok: { mode: 'random', from: '20:00', to: '08:00' } } } });
+  assert.equal(bad.status, 400, 'window must end after it starts');
+  const saved = (await call('/api/autopublish', { method: 'PUT', body: {
+    enabled: true, timezone: 'UTC', minScore: 50, platforms: { tiktok: { mode: 'random', perDay: 3, from: '10:00', to: '22:00' } },
+  } })).data;
+  assert.equal(saved.platforms.tiktok.mode, 'random');
+  assert.ok(saved.seed, 'a seed is created');
+  const autoPlan = async () => (await call(`/api/posts?from=${Date.now()}&to=${Date.now() + 8 * 86400000}`)).data.filter((p) => p.source === 'auto' && p.status === 'scheduled');
+  const plan = await autoPlan();
+  assert.ok(plan.length >= 3, `planned ${plan.length}`);
+  const perDay = {};
+  for (const p of plan) {
+    const d = new Date(p.scheduledAt);
+    const min = d.getUTCHours() * 60 + d.getUTCMinutes();
+    assert.ok(min >= 600 && min < 1320, `inside the window: ${d.toISOString()}`);
+    perDay[d.toISOString().slice(0, 10)] = (perDay[d.toISOString().slice(0, 10)] || 0) + 1;
+  }
+  assert.ok(Object.values(perDay).every((n) => n <= 3), 'never more than 3 a day');
+  // Re-planning (runs every few minutes) keeps the same times and doesn't add duplicates.
+  const { planUser } = await import('../server/publisher.js');
+  const me = (await call('/api/me')).data;
+  planUser(me.id);
+  assert.deepEqual((await autoPlan()).map((p) => p.scheduledAt).sort(), plan.map((p) => p.scheduledAt).sort());
+  // Shuffle: a new seed gives new times.
+  await call('/api/autopublish', { method: 'PUT', body: { seed: 'shuffled1' } });
+  assert.notDeepEqual((await autoPlan()).map((p) => p.scheduledAt).sort(), plan.map((p) => p.scheduledAt).sort());
+});

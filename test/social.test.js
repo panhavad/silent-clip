@@ -181,3 +181,29 @@ test('browser login through the live viewer, then human-like posting with result
   assert.equal((await call('/api/accounts')).data.accounts.find((a) => a.platform === 'mock').loggedIn, false);
   assert.ok(LoggedOutError);
 });
+
+test('healSignIn re-signs a lapsed login through the silent sign-in, and reports a real sign-out', async () => {
+  const { healSignIn } = await import('../server/social/session-check.js');
+  const fakePage = (googleStillSignedIn) => {
+    let signedIn = false;
+    return {
+      url: () => 'https://www.youtube.com/',
+      waitForTimeout: async () => {},
+      goto: async (u) => { if (u.includes('passive=true') && googleStillSignedIn) signedIn = true; },
+      get signedIn() { return signedIn; },
+    };
+  };
+  const driver = { passiveLoginUrl: 'https://accounts.google.com/ServiceLogin?passive=true', signedIn: async (p) => p.signedIn };
+
+  const healed = fakePage(true);
+  assert.equal(await healSignIn(driver, healed), true);
+  assert.equal(healed.__healed, true);
+
+  const gone = fakePage(false);
+  assert.equal(await healSignIn(driver, gone), false);
+  assert.equal(gone.__healed, undefined);
+
+  // Without a silent sign-in the platform's own answer stands.
+  assert.equal(await healSignIn({ signedIn: async () => false }, fakePage(true)), false);
+  assert.equal(await healSignIn({ signedIn: async () => null }, fakePage(true)), null);
+});

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { db, CLIPS_DIR, userSettings } from './db.js';
 import { DRIVERS, connectedPlatforms, getAccount, publishWithBrowser, saveShot, SHOTS_DIR } from './social/index.js';
 import { sleep } from './social/human.js';
+import { slotsForDay, dayKeyOf, toMinutes } from '../public/js/engine/slots.js';
 
 export const PLATFORMS = DRIVERS;
 const dryRun = () => process.env.PUBLISH_DRY_RUN === 'true';
@@ -44,19 +45,29 @@ export const DEFAULT_AUTOPUBLISH = {
   timezone: 'UTC',
   minScore: 0,
   maxAgeHours: 72,
+  seed: '',
+  // mode 'random': `perDay` posts at system-picked times between `from` and `to` (different every day);
+  // mode 'times': at the fixed `times`.
   platforms: {
-    youtube: { enabled: true, times: ['12:00', '18:00'], days: [0, 1, 2, 3, 4, 5, 6] },
-    tiktok: { enabled: true, times: ['11:00', '16:00', '20:00'], days: [0, 1, 2, 3, 4, 5, 6] },
-    instagram: { enabled: true, times: ['13:00', '19:00'], days: [0, 1, 2, 3, 4, 5, 6] },
+    youtube: { enabled: true, mode: 'random', perDay: 2, from: '10:00', to: '22:00', times: ['12:00', '18:00'], days: [0, 1, 2, 3, 4, 5, 6] },
+    tiktok: { enabled: true, mode: 'random', perDay: 3, from: '10:00', to: '22:00', times: ['11:00', '16:00', '20:00'], days: [0, 1, 2, 3, 4, 5, 6] },
+    instagram: { enabled: true, mode: 'random', perDay: 2, from: '10:00', to: '22:00', times: ['13:00', '19:00'], days: [0, 1, 2, 3, 4, 5, 6] },
   },
 };
 
 export function autopublishSettings(user) {
   const s = userSettings(user).autopublish || {};
   const out = { ...DEFAULT_AUTOPUBLISH, ...s, platforms: {} };
-  for (const p of Object.keys(PLATFORMS)) out.platforms[p] = { ...DEFAULT_AUTOPUBLISH.platforms[p], ...(s.platforms?.[p] || {}) };
+  for (const p of Object.keys(PLATFORMS)) {
+    const saved = s.platforms?.[p] || {};
+    out.platforms[p] = { ...DEFAULT_AUTOPUBLISH.platforms[p], ...saved };
+    // Schedules saved before random times existed keep their fixed times.
+    if (saved.times && !saved.mode) out.platforms[p].mode = 'times';
+  }
   return out;
 }
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export function sanitizeAutopublish(body, current) {
   const out = { ...current, platforms: { ...current.platforms } };
@@ -64,13 +75,23 @@ export function sanitizeAutopublish(body, current) {
   if (body.timezone && validTz(body.timezone)) out.timezone = body.timezone;
   if ('minScore' in body) out.minScore = Math.min(99, Math.max(0, Number(body.minScore) || 0));
   if ('maxAgeHours' in body) out.maxAgeHours = Math.min(24 * 30, Math.max(1, Number(body.maxAgeHours) || 72));
+  if ('seed' in body) out.seed = String(body.seed || '').replace(/[^\w-]/g, '').slice(0, 32);
+  if (!out.seed) out.seed = crypto.randomBytes(6).toString('hex');
   for (const p of Object.keys(PLATFORMS)) {
     const src = body.platforms?.[p];
     if (!src) continue;
     const cur = { ...out.platforms[p] };
     if ('enabled' in src) cur.enabled = Boolean(src.enabled);
-    if (Array.isArray(src.times)) cur.times = [...new Set(src.times.map(String).filter((t) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t)))].sort().slice(0, 12);
+    if (src.mode === 'random' || src.mode === 'times') cur.mode = src.mode;
+    else if (Array.isArray(src.times)) cur.mode = 'times'; // older clients / backups only know fixed times
+    if ('perDay' in src) cur.perDay = Math.min(24, Math.max(1, Math.round(Number(src.perDay)) || 1));
+    if (HHMM.test(src.from)) cur.from = src.from;
+    if (HHMM.test(src.to)) cur.to = src.to;
+    if (Array.isArray(src.times)) cur.times = [...new Set(src.times.map(String).filter((t) => HHMM.test(t)))].sort().slice(0, 12);
     if (Array.isArray(src.days)) cur.days = [...new Set(src.days.map(Number).filter((d) => d >= 0 && d <= 6))].sort();
+    // The window needs room for the posts: at least 15 minutes each.
+    if (toMinutes(cur.to) <= toMinutes(cur.from)) throw Object.assign(new Error(`${PLATFORMS[p].label}: the "until" time must be later than the "from" time`), { status: 400 });
+    cur.perDay = Math.min(cur.perDay, Math.floor((toMinutes(cur.to) - toMinutes(cur.from)) / 15));
     out.platforms[p] = cur;
   }
   return out;
@@ -204,7 +225,7 @@ export function planUser(userId, now = Date.now()) {
     for (let day = 0; day < 7 && queue.length; day++) {
       const { y, m, d, dow } = localDate(now + day * 86400000, ap.timezone);
       if (!cfg.days.includes(dow)) continue;
-      for (const t of cfg.times) {
+      for (const t of slotsForDay(cfg, { dayKey: dayKeyOf(y, m, d), platform, seed: ap.seed })) {
         const [hh, mm] = t.split(':').map(Number);
         const ts = zonedTime(y, m, d, hh, mm, ap.timezone);
         if (ts <= now + 60000 || taken.has(ts) || !queue.length) continue;
@@ -238,7 +259,8 @@ export const router = express.Router();
 router.get('/api/autopublish', (req, res) => res.json(autopublishSettings(req.user)));
 
 router.put('/api/autopublish', (req, res) => {
-  const next = sanitizeAutopublish(req.body || {}, autopublishSettings(req.user));
+  let next;
+  try { next = sanitizeAutopublish(req.body || {}, autopublishSettings(req.user)); } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const settings = { ...userSettings(req.user), autopublish: next };
   db.prepare('UPDATE users SET settings = ? WHERE id = ?').run(JSON.stringify(settings), req.user.id);
   // Rebuild the automatic plan with the new slots; manual posts are untouched.

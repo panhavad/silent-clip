@@ -9,6 +9,9 @@ services:
         BUILD_TIME: ${BUILD_TIME:-}
     image: slientclip-app
     restart: unless-stopped
+    # Reaps Chrome's helper processes and gives the app time to close browsers (saving login cookies) on redeploy.
+    init: true
+    stop_grace_period: 30s
     ports:
       - "${APP_PORT:-8080}:8080"
     environment:

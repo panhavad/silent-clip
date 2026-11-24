@@ -2,6 +2,10 @@ import { api, esc, toast } from './api.js';
 import { getAccounts, accountFor, PLATFORM_META } from './accounts.js';
 import { openBrowserViewer } from './browser-view.js';
 import { icon } from './icons.js';
+import { slotsForDay, dayKeyOf } from './engine/slots.js';
+
+const countPerDay = (c) => (c.mode === 'random' ? c.perDay : c.times.length);
+const localDayKey = (ts) => { const d = new Date(ts); return dayKeyOf(d.getFullYear(), d.getMonth() + 1, d.getDate()); };
 import { skeleton, showLoading, lazyImages } from './loader.js';
 
 const DAY = 86400000;
@@ -26,6 +30,7 @@ export class ScheduleView {
           <div><h2 style="margin:0">Auto-publish</h2><div class="muted small ap-sub"></div></div>
           <span class="spacer"></span>
           <label class="switch"><input type="checkbox" class="ap-enabled"><span></span> <b class="ap-state">Off</b></label>
+          <button class="btn ap-shuffle" title="Pick new random posting times (for platforms set to Random times)">${icon('shuffle')}Shuffle times</button>
           <button class="btn primary ap-save">Save schedule</button>
         </div>
         <div class="row wrap small" style="margin-bottom:12px;gap:18px">
@@ -52,6 +57,7 @@ export class ScheduleView {
     $('.cal-today').onclick = () => { this.anchor = Date.now(); this.renderCalendar(); };
     root.querySelectorAll('.cal-mode button').forEach((b) => { b.onclick = () => { this.view = b.dataset.v; this.renderCalendar(); }; });
     $('.ap-save').onclick = () => this.save();
+    $('.ap-shuffle').onclick = () => this.save({ seed: Math.random().toString(36).slice(2, 12) });
     $('.ap-enabled').onchange = () => this.save();
   }
 
@@ -93,30 +99,51 @@ export class ScheduleView {
     $('.ap-age').value = s.maxAgeHours;
     $('.ap-tz').textContent = s.timezone;
     const perDay = Object.entries(s.platforms).filter(([p, c]) => c.enabled && accountFor(this.accounts, p)?.connected)
-      .map(([p, c]) => `${c.times.length}× ${PLATFORM_META[p].short}`);
+      .map(([p, c]) => `${countPerDay(c)}× ${PLATFORM_META[p].short}`);
     $('.ap-sub').textContent = s.enabled
       ? `Automatically fills these posting slots with your best new clips${perDay.length ? ` — up to ${perDay.join(', ')} per day` : ' — log in to an account to start'}.`
       : 'Turn on to post clips automatically at the times below. You can still post or schedule manually from any clip.';
     $('.ap-platforms').innerHTML = Object.entries(s.platforms).map(([p, c]) => {
       const m = PLATFORM_META[p];
       const acc = accountFor(this.accounts, p);
+      const random = c.mode === 'random';
       return `<div class="ap-row" data-p="${p}">
         <div class="row" style="min-width:210px"><div class="plat-logo ${m.cls}">${m.icon}</div><div><b>${m.label}</b><div class="small ${acc?.connected ? 'muted' : ''}" style="${acc?.connected ? '' : 'color:var(--warn)'}">${acc?.connected ? esc(acc.username ? `@${acc.username}` : acc.displayName || 'logged in') : 'Not logged in: <a href="#settings">log in</a>'}</div></div></div>
         <label class="row small"><input type="checkbox" class="p-en" ${c.enabled ? 'checked' : ''}> Auto-post</label>
-        <div class="row wrap times">${c.times.map((t) => `<span class="chip time">${t}<button title="Remove" data-t="${t}">×</button></span>`).join('')}
-          <input type="time" class="add-time" style="width:110px"><button class="btn sm add-btn">${icon('plus')}time</button></div>
+        <div class="seg ap-mode" title="Random: you choose how many a day, the system picks the times. Fixed: you choose the exact times.">
+          <button data-m="random" class="${random ? 'active' : ''}">${icon('shuffle')}Random times</button><button data-m="times" class="${random ? '' : 'active'}">${icon('clock')}Fixed times</button></div>
+        ${random
+    ? `<div class="row wrap small ap-random">
+            <input type="number" class="per-day" min="1" max="24" value="${c.perDay}" aria-label="Videos per day"> videos a day, between
+            <input type="time" class="from" value="${c.from}" aria-label="From"> and <input type="time" class="to" value="${c.to}" aria-label="Until">
+            <span class="muted ap-preview"></span></div>`
+    : `<div class="row wrap times">${c.times.map((t) => `<span class="chip time">${t}<button title="Remove" data-t="${t}">×</button></span>`).join('')}
+            <input type="time" class="add-time" style="width:110px"><button class="btn sm add-btn">${icon('plus')}time</button></div>`}
         <div class="row days">${DOW.map((d, i) => `<button class="day ${c.days.includes(i) ? 'on' : ''}" data-d="${i}" title="${d}">${d[0]}</button>`).join('')}</div>
-        <span class="small muted">${c.times.length}/day</span>
+        <span class="small muted per-day-label">${countPerDay(c)}/day</span>
       </div>`;
     }).join('');
     this.root.querySelectorAll('.ap-row').forEach((row) => {
-      const c = s.platforms[row.dataset.p];
+      const p = row.dataset.p;
+      const c = s.platforms[p];
       row.querySelector('.p-en').onchange = (e) => { c.enabled = e.target.checked; };
-      row.querySelectorAll('.chip.time button').forEach((b) => { b.onclick = () => { c.times = c.times.filter((t) => t !== b.dataset.t); this.renderSettings(); }; });
-      row.querySelector('.add-btn').onclick = () => {
-        const v = row.querySelector('.add-time').value;
-        if (v && !c.times.includes(v)) { c.times = [...c.times, v].sort(); this.renderSettings(); }
-      };
+      row.querySelectorAll('.ap-mode button').forEach((b) => { b.onclick = () => { c.mode = b.dataset.m; this.renderSettings(); }; });
+      if (c.mode === 'random') {
+        const preview = () => {
+          row.querySelector('.ap-preview').textContent = `Today: ${slotsForDay(c, { dayKey: localDayKey(Date.now()), platform: p, seed: s.seed }).join(' · ')}`;
+          row.querySelector('.per-day-label').textContent = `${countPerDay(c)}/day`;
+        };
+        row.querySelector('.per-day').oninput = (e) => { c.perDay = Math.min(24, Math.max(1, Number(e.target.value) || 1)); preview(); };
+        row.querySelector('.from').onchange = (e) => { if (e.target.value) c.from = e.target.value; preview(); };
+        row.querySelector('.to').onchange = (e) => { if (e.target.value) c.to = e.target.value; preview(); };
+        preview();
+      } else {
+        row.querySelectorAll('.chip.time button').forEach((b) => { b.onclick = () => { c.times = c.times.filter((t) => t !== b.dataset.t); this.renderSettings(); }; });
+        row.querySelector('.add-btn').onclick = () => {
+          const v = row.querySelector('.add-time').value;
+          if (v && !c.times.includes(v)) { c.times = [...c.times, v].sort(); this.renderSettings(); }
+        };
+      }
       row.querySelectorAll('.day').forEach((b) => {
         b.onclick = () => {
           const d = Number(b.dataset.d);
@@ -127,11 +154,13 @@ export class ScheduleView {
     });
   }
 
-  async save() {
+  async save(extra = {}) {
     const $ = (sel) => this.root.querySelector(sel);
-    const body = { ...this.settings, enabled: $('.ap-enabled').checked, minScore: Number($('.ap-min').value), maxAgeHours: Number($('.ap-age').value), timezone: this.tz };
-    this.settings = await api('/api/autopublish', { method: 'PUT', body });
-    toast(this.settings.enabled ? 'Auto-publish schedule saved' : 'Auto-publish turned off', 'ok');
+    const body = { ...this.settings, enabled: $('.ap-enabled').checked, minScore: Number($('.ap-min').value), maxAgeHours: Number($('.ap-age').value), timezone: this.tz, ...extra };
+    try {
+      this.settings = await api('/api/autopublish', { method: 'PUT', body });
+    } catch (e) { toast(e.message, 'error'); return; }
+    toast(extra.seed ? 'New random times picked' : this.settings.enabled ? 'Auto-publish schedule saved' : 'Auto-publish turned off', 'ok');
     this.renderSettings();
     this.renderCalendar();
   }
@@ -144,7 +173,7 @@ export class ScheduleView {
     const out = [];
     for (const [p, c] of Object.entries(s.platforms)) {
       if (!c.enabled || !accountFor(this.accounts, p)?.connected || !c.days.includes(dow)) continue;
-      for (const t of c.times) {
+      for (const t of slotsForDay(c, { dayKey: localDayKey(dayStart), platform: p, seed: s.seed })) {
         const [h, m] = t.split(':').map(Number);
         const ts = new Date(dayStart).setHours(h, m, 0, 0);
         if (ts > Date.now()) out.push({ platform: p, ts });

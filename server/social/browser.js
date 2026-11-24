@@ -118,6 +118,11 @@ export class BrowserSession {
     this.headed = headed && canShowWindow();
     const dir = profileDir(this.userId, this.platform);
     fs.mkdirSync(dir, { recursive: true });
+    // Only this server opens these profiles, and none is open now, so any lock is left over from a killed
+    // process (e.g. a container restart, which also changes the hostname Chrome stamps into the lock).
+    for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      try { fs.rmSync(path.join(dir, f), { force: true }); } catch { /* not there */ }
+    }
     const args = [
       '--disable-blink-features=AutomationControlled',
       '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage',
@@ -274,6 +279,11 @@ export async function openSession({ userId, platform, kind, headed }) {
 
 export async function closeUserSessions(userId, platform) {
   await Promise.all(liveSessions().filter((s) => s.userId === userId && (!platform || s.platform === platform)).map((s) => s.close()));
+}
+
+/** Close every browser cleanly (Chrome writes freshly rotated login cookies to disk only on a clean exit). */
+export async function closeAllSessions() {
+  await Promise.all(liveSessions().map((s) => s.close()));
 }
 
 // Abandoned login windows are closed so the profile can be used for posting again.

@@ -44,6 +44,7 @@ test('auth, streamers and clip lifecycle with new/downloaded/posted tracking', a
   assert.equal((await call('/api/auth/register', { method: 'POST', body: { email: 'a@b.co', password: 'short' } })).status, 400);
   assert.equal((await call('/api/auth/register', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } })).status, 200);
   assert.equal((await call('/api/me')).data.email, 'a@b.co');
+  assert.equal((await call('/api/me')).data.settings.autoStart, false, 'watching never starts on its own by default');
 
   const s = await call('/api/streamers', { method: 'POST', body: { url: 'https://www.twitch.tv/Jynxzi' } });
   assert.equal(s.data.login, 'jynxzi');

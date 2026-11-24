@@ -8,6 +8,7 @@ import {
   browserAvailable, browserExecutable, canShowWindow,
 } from './browser.js';
 import { LoggedOutError, pause, sleep } from './human.js';
+import { healSignIn } from './session-check.js';
 import { youtube } from './youtube.js';
 import { tiktok } from './tiktok.js';
 import { instagram } from './instagram.js';
@@ -31,14 +32,27 @@ export function getAccount(userId, platform) {
     platform, username: r.username, displayName: r.display_name, avatar: r.avatar,
     loggedIn: meta.loggedIn !== false, checkedAt: meta.checkedAt || r.updated_at, refreshedAt: meta.refreshedAt || null, demo: Boolean(meta.demo), since: r.created_at,
     loggedOutReason: meta.loggedIn === false ? meta.reason || null : null,
+    history: Array.isArray(meta.history) ? meta.history : [],
   };
+}
+
+const HISTORY_MAX = 20;
+/** Remember what happened to a login (newest first) so Settings can show why it was kept or lost. */
+export function logLoginEvent(userId, platform, ok, text) {
+  const r = db.prepare('SELECT meta FROM accounts WHERE user_id = ? AND platform = ?').get(userId, platform);
+  if (!r) return;
+  const meta = json(r.meta, {});
+  const history = [{ at: Date.now(), ok, text: String(text).slice(0, 200) }, ...(Array.isArray(meta.history) ? meta.history : [])].slice(0, HISTORY_MAX);
+  db.prepare('UPDATE accounts SET meta = ? WHERE user_id = ? AND platform = ?').run(JSON.stringify({ ...meta, history }), userId, platform);
 }
 
 export const connectedPlatforms = (userId) => Object.keys(DRIVERS).filter((p) => getAccount(userId, p)?.loggedIn);
 
 export function saveAccount(userId, platform, info = {}) {
   const now = Date.now();
-  const meta = JSON.stringify({ loggedIn: true, checkedAt: now, refreshedAt: now, method: 'browser', demo: Boolean(info.demo) });
+  const prev = json(db.prepare('SELECT meta FROM accounts WHERE user_id = ? AND platform = ?').get(userId, platform)?.meta, {});
+  const history = [{ at: now, ok: true, text: 'Signed in' }, ...(Array.isArray(prev.history) ? prev.history : [])].slice(0, HISTORY_MAX);
+  const meta = JSON.stringify({ loggedIn: true, checkedAt: now, refreshedAt: now, method: 'browser', demo: Boolean(info.demo), history });
   db.prepare(`INSERT INTO accounts (user_id, platform, username, display_name, avatar, meta, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(user_id, platform) DO UPDATE SET username = COALESCE(excluded.username, username),
@@ -50,6 +64,7 @@ export function saveAccount(userId, platform, info = {}) {
 export function markLoggedOut(userId, platform, reason = '') {
   console.warn(`[social] ${platform} login of user ${userId} marked expired: ${reason || 'no reason given'}`);
   touchAccount(userId, platform, { loggedIn: false, checkedAt: Date.now(), reason: String(reason).slice(0, 300) || null });
+  logLoginEvent(userId, platform, false, `Marked expired: ${reason || 'no reason given'}`);
 }
 
 function touchAccount(userId, platform, patch) {
@@ -99,17 +114,20 @@ async function confirmLogin(userId, session) {
  * refreshes its own login cookies) and record the result. Only a definite answer marks a login as
  * expired; returns true / false, or null when the platform didn't give a clear answer.
  */
-export async function refreshSession(userId, platform) {
+export async function refreshSession(userId, platform, { why = 'Background keep-alive' } = {}) {
   const d = DRIVERS[platform];
   const s = await openSession({ userId, platform, kind: 'check', headed: false });
   try {
     s.step = 'Keeping the login fresh';
     let { loggedIn } = await readSession(s);
     let reason = loggedIn ? '' : `the ${d.label} login cookies are gone from the browser profile`;
-    if (loggedIn && d.signedIn) {
-      const v = await d.signedIn(s.page).catch(() => null);
+    // Google's own account login can outlive YouTube's cookies, so let it re-sign YouTube in first.
+    if (d.signedIn && (loggedIn || d.passiveLoginUrl)) {
+      const v = await healSignIn(d, s.page);
       await sleep(KEEPALIVE_DWELL_MS);
-      if (v === false) { loggedIn = false; reason = `${d.label} says this browser is signed out`; } else if (v === null) loggedIn = null;
+      if (v === false) { loggedIn = false; reason = `${reason || `${d.label} says this browser is signed out`}${d.passiveLoginUrl ? ', and Google\'s silent re-sign-in didn\'t work either' : ''}`; } else if (v === null) loggedIn = loggedIn ? null : false;
+      else loggedIn = true;
+      if (s.page.__healed) logLoginEvent(userId, platform, true, `${why}: ${d.label} had signed out; signed back in automatically`);
     } else if (loggedIn && d.homeUrl) {
       await s.page.goto(d.homeUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
       await s.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
@@ -122,6 +140,8 @@ export async function refreshSession(userId, platform) {
     if (loggedIn === false) markLoggedOut(userId, platform, reason);
     else if (loggedIn && !getAccount(userId, platform)) await confirmLogin(userId, s);
     else if (loggedIn) touchAccount(userId, platform, { loggedIn: true, checkedAt: Date.now(), refreshedAt: Date.now(), reason: null });
+    if (loggedIn === null) logLoginEvent(userId, platform, null, `${why}: ${d.label} gave no clear answer; kept the login as it was`);
+    else if (loggedIn && !s.page.__healed) logLoginEvent(userId, platform, true, `${why}: still signed in`);
     return loggedIn;
   } finally { await s.close(); }
 }
@@ -130,7 +150,7 @@ export async function refreshSession(userId, platform) {
 export async function checkLogin(user, platform) {
   if (dryRun() && getAccount(user.id, platform)?.demo) return getAccount(user.id, platform);
   if (profileBusy(user.id, platform)) return getAccount(user.id, platform);
-  await refreshSession(user.id, platform);
+  await refreshSession(user.id, platform, { why: 'Check' });
   return getAccount(user.id, platform) || { platform, loggedIn: false };
 }
 
@@ -202,12 +222,14 @@ export async function publishWithBrowser({ user, platform, file, clip, onStep, o
   const step = (t) => { session.step = t; onStep?.(t); };
   try {
     const { loggedIn } = await readSession(session);
-    if (!loggedIn) throw new LoggedOutError(d.label);
+    if (!loggedIn && !d.passiveLoginUrl) throw new LoggedOutError(d.label);
+    const onHealed = () => logLoginEvent(user.id, platform, true, `Posting: ${d.label} had signed out; signed back in automatically`);
     const out = await d.publish({
-      page: session.page, file, clip, settings, step, account: getAccount(user.id, platform), final: () => { pressedPost = true; },
+      page: session.page, file, clip, settings, step, onHealed, account: getAccount(user.id, platform), final: () => { pressedPost = true; },
     });
     step('Posted');
-    touchAccount(user.id, platform, { loggedIn: true, checkedAt: Date.now(), refreshedAt: Date.now() });
+    touchAccount(user.id, platform, { loggedIn: true, checkedAt: Date.now(), refreshedAt: Date.now(), reason: null });
+    logLoginEvent(user.id, platform, true, 'Posted a clip');
     await pause(1500, 2500);
     return out;
   } catch (e) {
@@ -250,7 +272,7 @@ router.get('/api/accounts', (req, res) => {
       return {
         platform: d.id, label: d.label, connected: Boolean(a?.loggedIn), loggedIn: Boolean(a?.loggedIn), known: Boolean(a),
         username: a?.username || null, displayName: a?.displayName || null, avatar: a?.avatar || null,
-        checkedAt: a?.checkedAt || null, demo: Boolean(a?.demo), loggedOutReason: a?.loggedOutReason || null, session: s ? { id: s.id, kind: s.kind, step: s.step } : null,
+        checkedAt: a?.checkedAt || null, demo: Boolean(a?.demo), loggedOutReason: a?.loggedOutReason || null, history: a?.history || [], session: s ? { id: s.id, kind: s.kind, step: s.step } : null,
       };
     }),
   });

@@ -24,7 +24,7 @@ The server also stores data (accounts, streamers, finished clips, schedules) and
 - Auto-generated **title, description, viral point (score, reason, chat evidence) and hashtags**
 - Clip library with **New / Downloaded / Posted / Scheduled** tracking, editable metadata, editable subtitles + caption re-render, **Caption all clips** (adds subtitles to older clips) and download
 - **Social accounts without API keys**: log in to YouTube, TikTok and Instagram once through a live view of the server's browser. Then **Post now** or **Schedule** any clip, and the server's browser uploads it like a person would, in the background with a success/failure report or in the foreground where you can watch it.
-- **Auto-publish** — choose posting times and days per platform (e.g. TikTok 11:00 / 16:00 / 20:00) plus a minimum viral score; the planner fills upcoming slots with your best unposted clips and publishes them automatically
+- **Auto-publish** — per platform, either **Random times** (you set how many videos a day and between which hours; the system picks natural-looking upload times that change every day, and **Shuffle times** picks new ones) or **Fixed times** (e.g. TikTok 11:00 / 16:00 / 20:00), plus posting days and a minimum viral score; the planner fills upcoming slots with your best unposted clips and publishes them automatically
 - **Schedule calendar** (week / month) — every scheduled, published and failed post, open slots, drag-and-drop rescheduling, post now / retry / unschedule
 - `docker compose` deployment with an **auto-updater** that redeploys on every `git push` to your private GitHub repo
 
@@ -85,6 +85,8 @@ Settings per user: **background** (hidden browser, reports the result) or **fore
 Safety rules:
 - Before every post the saved session is checked. If the platform logged it out, the post fails with "log in again" and the account is flagged in Settings.
 - **Logins are kept alive.** Every 6 hours (`SOCIAL_KEEPALIVE_HOURS`, `0` turns it off) each saved login is opened in the background, visits the platform for ~20 s (`SOCIAL_KEEPALIVE_DWELL_SEC`) so the site refreshes its login cookies, and is checked to confirm it's still signed in. **Check** really asks the platform (for YouTube, YouTube's own signed-in flag) instead of only looking at cookies. A login is only marked expired on a clear answer, and Settings shows why.
+- **YouTube signs itself back in.** If YouTube says it's signed out (on keep-alive, Check or while posting) but the Google account in that browser is still signed in, SlientClip runs Google's silent sign-in and carries on, with no new login needed. Each account has a **Login history** in Settings (last 20 events: signed in, kept alive, re-signed in, posted, expired and why).
+- **Clean shutdown keeps cookies.** On `docker compose` stop/redeploy (SIGTERM) the app closes its browsers before exiting, so the login cookies Google just rotated are saved. Re-using stale rotated cookies is a common reason Google signs a session out. The compose file gives it `init: true` and a 30 s grace period.
 - **Same device every time.** The hidden browser presents exactly the identity of the visible one (the browser's real user agent and client hints, only without "Headless"), so a login made in a visible window isn't treated by Google as a session copied to another device.
 - Your SlientClip sign-in doesn't expire while you use it: every visit extends it to 400 days.
 - A failure **before** pressing Post is retried automatically (up to 3 times). A failure **after** pressing Post is never retried, because the video may already be live. The same applies to posts interrupted by a server restart.
@@ -135,7 +137,7 @@ The running release is shown as a badge next to the logo (hover it for the commi
    - Each streamer is watched by exactly one window/tab at a time (Web Locks), so modes can be mixed safely.
 3. When chat explodes, the card shows *Capturing → Rendering 9:16 → Saved*. **Clip now** captures manually.
 4. **Clips** → each card has **YouTube / TikTok / Instagram** buttons: one click (and a confirm) posts the clip right away. If that account isn't logged in yet, the login opens first, and the button shows whether the clip is posting, scheduled or already posted. Open a clip to tweak title/description/hashtags/caption (re-render), or to **Schedule** a post (or *post manually* if the account isn't linked). Downloaded/posted clips leave the *New* list.
-5. **Schedule** → turn on **Auto-publish**, set posting times/days per platform and a minimum viral score. The calendar shows what goes out when; drag a post to another day, or click it to post now, reschedule, retry or unschedule.
+5. **Schedule** → turn on **Auto-publish**. Per platform, choose **Random times** (e.g. *4 videos a day between 09:00 and 23:00*; the times are picked for you, spread over the window and different each day) or **Fixed times**, then the days and a minimum viral score. The calendar shows what goes out when; drag a post to another day, or click it to post now, reschedule, retry or unschedule.
 
 ### Accounts & administration
 
@@ -149,7 +151,9 @@ The running release is shown as a badge next to the logo (hover it for the commi
 
 ### Settings
 
-Sensitivity (1–10), seconds before/after the viral point, chat reaction delay, cooldown, max clips/hour, layout (blur / crop), output resolution (540p / 720p / 1080p), hook + chat captions (on by default), auto subtitles (on by default) and subtitle language (auto = streamer's Twitch language), keep raw source (for re-rendering), run on browser or server, default mode, auto-start.
+Sensitivity (1–10), seconds before/after the viral point, chat reaction delay, cooldown, max clips/hour, layout (blur / crop), output resolution (540p / 720p / 1080p), hook + chat captions (on by default), auto subtitles (on by default) and subtitle language (auto = streamer's Twitch language), keep raw source (for re-rendering), run on browser or server, default mode, auto-start (off by default).
+
+Watching only shows as running when it really is. Watching in the browser stops when its page is closed or reloaded, and the app comes back **Stopped** instead of restarting on its own. After a reload in foreground mode it only shows running once an open watch window reports in, and it stops by itself when all watch windows are closed. Server watching is reported by the server, so it keeps running after you close the page.
 
 The speech model (~100 MB, `onnx-community/whisper-base_timestamped`) is downloaded from Hugging Face the first time a browser captions a clip and cached afterwards. Subtitles can be corrected per clip (`start-end | text` lines) and re-rendered.
 

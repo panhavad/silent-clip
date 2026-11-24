@@ -1,5 +1,6 @@
 // YouTube Shorts: drives YouTube Studio's upload dialog like a person would.
 import { humanClick, clearAndType, clickIfVisible, waitForAny, pause, LoggedOutError } from './human.js';
+import { healSignIn } from './session-check.js';
 
 const VISIBILITY = { public: 'PUBLIC', unlisted: 'UNLISTED', private: 'PRIVATE' };
 
@@ -12,6 +13,10 @@ export const youtube = {
   hosts: ['youtube.com', 'google.com'],
   // LOGIN_INFO stays behind after Google ends a session, so only the Google session cookies count.
   sessionCookies: { urls: ['https://www.youtube.com'], names: ['SID', '__Secure-3PSID'] },
+  // Google's silent sign-in: if the Google account is still signed in, this re-signs YouTube in with no
+  // page to fill in; if it isn't, it just stops at the sign-in page.
+  passiveLoginUrl: 'https://accounts.google.com/ServiceLogin?service=youtube&passive=true&hl=en&uilel=3'
+    + '&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26app%3Ddesktop%26hl%3Den%26next%3D%252F',
 
   /** YouTube's own answer (ytcfg LOGGED_IN): true / false, or null when the page didn't say. */
   async signedIn(page) {
@@ -24,11 +29,13 @@ export const youtube = {
     return null;
   },
 
-  /** Upload page bounced to Google: really signed out, or just a "confirm it's you" step? */
-  async loginWall(page) {
+  /** Upload page bounced to Google. Re-sign YouTube in silently if the Google account still is; else report why. */
+  async loginWall(page, onHealed) {
     const shown = page.url();
-    const signedIn = await this.signedIn(page).catch(() => null);
-    if (signedIn === false) throw new LoggedOutError(this.label);
+    if (await healSignIn(this, page) === false) throw new LoggedOutError(this.label);
+    if (page.__healed) onHealed?.();
+    await page.goto('https://www.youtube.com/upload?hl=en', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    if (!/accounts\.google\.com|ServiceLogin/.test(page.url())) return;
     throw Object.assign(new Error(`Google asked to confirm the sign-in before uploading (${shown.split('?')[0]}). Open the post with Watch, or use Check in Settings → Social accounts, then retry.`), { final: true });
   },
 
@@ -40,19 +47,23 @@ export const youtube = {
     return { displayName: name?.trim() || 'YouTube channel', username: name?.trim() || null };
   },
 
-  async publish({ page, file, clip, settings, step, final }) {
+  async publish({ page, file, clip, settings, step, final, onHealed }) {
     step('Opening YouTube Studio');
     await page.goto('https://www.youtube.com/upload?hl=en', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    if (/accounts\.google\.com|ServiceLogin/.test(page.url())) await this.loginWall(page);
+    if (/accounts\.google\.com|ServiceLogin/.test(page.url())) { step('Signing YouTube back in'); await this.loginWall(page, onHealed); }
     const fileInput = page.locator('ytcp-uploads-dialog input[type=file], input[type=file][name=Filedata], input[type=file]').first();
-    await waitForAny({
-      dialog: () => fileInput.count(),
-      noChannel: () => page.getByText(/create (a|your) channel/i).first().isVisible(),
-      login: async () => /accounts\.google\.com/.test(page.url()),
-    }, { timeout: 60000, what: 'the YouTube upload dialog' }).then(async ({ name }) => {
-      if (name === 'login') await this.loginWall(page);
+    for (let attempt = 0; ; attempt++) {
+      const { name } = await waitForAny({
+        dialog: () => fileInput.count(),
+        noChannel: () => page.getByText(/create (a|your) channel/i).first().isVisible(),
+        login: async () => /accounts\.google\.com/.test(page.url()),
+      }, { timeout: 60000, what: 'the YouTube upload dialog' });
       if (name === 'noChannel') throw Object.assign(new Error('This Google account has no YouTube channel yet. Create one on YouTube first.'), { final: true });
-    });
+      if (name !== 'login') break;
+      if (attempt) throw new LoggedOutError(this.label);
+      step('Signing YouTube back in');
+      await this.loginWall(page, onHealed);
+    }
     await pause(600, 1400);
 
     step('Uploading video');

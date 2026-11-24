@@ -49,6 +49,7 @@ const PATHS = {
   radio: S(['<circle cx="12" cy="12" r="2"/>', 'M16.2 7.8a6 6 0 0 1 0 8.4', 'M7.8 16.2a6 6 0 0 1 0-8.4', 'M19.1 4.9a10 10 0 0 1 0 14.2', 'M4.9 19.1a10 10 0 0 1 0-14.2']),
   // Brand glyphs (filled, shown on the platform colour)
   search: S(['<circle cx="11" cy="11" r="7"/>', 'm20 20-3.5-3.5']),
+  shuffle: S(['M16 3h5v5', 'M4 20 21 3', 'M21 16v5h-5', 'm15 15 6 6', 'M4 4l5 5']),
   grid: S(['<rect x="3" y="3" width="7" height="7" rx="1"/>', '<rect x="14" y="3" width="7" height="7" rx="1"/>', '<rect x="3" y="14" width="7" height="7" rx="1"/>', '<rect x="14" y="14" width="7" height="7" rx="1"/>']),
   youtube: '<path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/>',
   tiktok: '<path d="M15.5 2.5c.4 2.4 2 4 4.5 4.3v3.4c-1.6 0-3.1-.5-4.4-1.3v6.4a6.2 6.2 0 1 1-6.2-6.2c.3 0 .6 0 .9.1v3.5a2.8 2.8 0 1 0 1.9 2.6V2.5z" fill="currentColor" stroke="none"/>',

@@ -113,6 +113,12 @@ if (!userCols.has('last_login_at')) db.exec('ALTER TABLE users ADD COLUMN last_l
 if (!userCols.has('storage_limit')) db.exec('ALTER TABLE users ADD COLUMN storage_limit INTEGER');
 // Admin switch: may this account watch & clip on the server (processing = 'server')? 1 = allowed.
 if (!userCols.has('server_watch')) db.exec('ALTER TABLE users ADD COLUMN server_watch INTEGER NOT NULL DEFAULT 1');
+// v1.9: watching never starts on its own unless chosen. Auto-start used to default to on and was saved with
+// every settings form, so switch it off once for existing accounts; users can turn it back on in Settings.
+if (db.prepare('PRAGMA user_version').get().user_version < 1) {
+  db.exec(`UPDATE users SET settings = json_set(settings, '$.autoStart', json('false')) WHERE json_valid(settings) AND json_extract(settings, '$.autoStart') = 1;
+           PRAGMA user_version = 1;`);
+}
 const postCols = new Set(db.prepare('PRAGMA table_info(posts)').all().map((c) => c.name));
 if (!postCols.has('step')) db.exec('ALTER TABLE posts ADD COLUMN step TEXT');
 if (!postCols.has('shot')) db.exec('ALTER TABLE posts ADD COLUMN shot INTEGER NOT NULL DEFAULT 0');
@@ -137,7 +143,7 @@ export function newAccountState(email) {
 export const DEFAULT_SETTINGS = {
   mode: 'background',          // background | foreground
   windowLayout: 'per-streamer', // per-streamer | grid
-  autoStart: true,             // start watching automatically when the app is opened
+  autoStart: false,            // start background watching automatically when the app is opened (opt-in)
   sensitivity: 5,              // 1 (only huge spikes) .. 10 (clip often)
   cooldownSec: 120,
   maxClipsPerHour: 10,
