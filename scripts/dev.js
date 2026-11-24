@@ -45,5 +45,12 @@ for (const dir of watchDirs) {
   });
 }
 
+// Version badge reads package.json and the git commit at startup, so restart on a bump or a new commit.
+for (const rel of ['package.json', '.git/logs/HEAD']) {
+  const file = path.join(root, rel);
+  if (!fs.existsSync(file)) continue;
+  fs.watchFile(file, { interval: 1000 }, (cur, prev) => { if (cur.mtimeMs !== prev.mtimeMs) restart(file); });
+}
+
 process.on('SIGINT', () => { child?.kill('SIGTERM'); process.exit(0); });
 start();

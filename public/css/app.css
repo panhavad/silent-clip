@@ -224,6 +224,7 @@ table.users select { width: auto; padding: 5px 8px; }
 .user-box { flex: none; }
 .me-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row > input, .row > select, .row > textarea { min-width: 0; }
+input[type=checkbox], input[type=radio] { flex: none; }
 img, video { max-width: 100%; }
 body:has(.modal-back) { overflow: hidden; }
 
