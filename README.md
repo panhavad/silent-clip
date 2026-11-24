@@ -26,7 +26,7 @@ The server also stores data (accounts, streamers, finished clips, schedules) and
 - **Social accounts without API keys**: log in to YouTube, TikTok and Instagram once through a live view of the server's browser. Then **Post now** or **Schedule** any clip, and the server's browser uploads it like a person would, in the background with a success/failure report or in the foreground where you can watch it.
 - **Auto-publish** — per platform, either **Random times** (you set how many videos a day and between which hours; the system picks natural-looking upload times that change every day, and **Shuffle times** picks new ones) or **Fixed times** (e.g. TikTok 11:00 / 16:00 / 20:00), plus posting days and a minimum viral score; the planner fills upcoming slots with your best unposted clips and publishes them automatically
 - **Schedule calendar** (week / month) — every scheduled, published and failed post, open slots, drag-and-drop rescheduling, post now / retry / unschedule
-- `docker compose` deployment with an **auto-updater** that redeploys on every `git push` to your private GitHub repo
+- `docker compose` deployment; you deploy updates yourself with `git pull` + `docker compose up -d --build`
 
 ## Architecture
 
@@ -43,7 +43,6 @@ Browser (per user)                                        Server (Node + SQLite)
                                                           │ Chromium (one profile per│
                                                           │  user + platform) ──────►│ YouTube Studio / TikTok Studio / instagram.com
                                                           └──────────────────────────┘
-updater sidecar: GitHub push webhook / polling → git pull → docker compose up --build app
 ```
 
 \* Twitch's `usher` endpoint (the master `.m3u8`, a tiny text file) only sends CORS headers to twitch.tv, so the server relays just that one text manifest. Media playlists and all video segments are fetched by the browser directly.
@@ -86,7 +85,8 @@ Safety rules:
 - Before every post the saved session is checked. If the platform logged it out, the post fails with "log in again" and the account is flagged in Settings.
 - **Logins are kept alive.** Every 6 hours (`SOCIAL_KEEPALIVE_HOURS`, `0` turns it off) each saved login is opened in the background, visits the platform for ~20 s (`SOCIAL_KEEPALIVE_DWELL_SEC`) so the site refreshes its login cookies, and is checked to confirm it's still signed in. **Check** really asks the platform (for YouTube, YouTube's own signed-in flag) instead of only looking at cookies. A login is only marked expired on a clear answer, and Settings shows why.
 - **YouTube signs itself back in.** If YouTube says it's signed out (on keep-alive, Check or while posting) but the Google account in that browser is still signed in, SlientClip runs Google's silent sign-in and carries on, with no new login needed. Each account has a **Login history** in Settings (last 20 events: signed in, kept alive, re-signed in, posted, expired and why).
-- **Clean shutdown keeps cookies.** On `docker compose` stop/redeploy (SIGTERM) the app closes its browsers before exiting, so the login cookies Google just rotated are saved. Re-using stale rotated cookies is a common reason Google signs a session out. The compose file gives it `init: true` and a 30 s grace period.
+- **Clean shutdown keeps cookies.** On `docker compose` stop/redeploy (SIGTERM) the app closes its browsers and waits for Chromium to exit before quitting, so the login cookies Google just rotated are saved. Re-using stale rotated cookies is a common reason Google signs a session out. The compose file gives it `init: true` and a 30 s grace period.
+- **Profiles survive redeploys.** A Chromium killed mid-session leaves a profile lock stamped with the old container's hostname, and a new container then refuses the profile ("in use by another computer"), which broke login, Check and posting after a redeploy. Locks whose Chromium is gone are now cleared automatically; a Chromium still closing is waited for.
 - **Same device every time.** The hidden browser presents exactly the identity of the visible one (the browser's real user agent and client hints, only without "Headless"), so a login made in a visible window isn't treated by Google as a session copied to another device.
 - Your SlientClip sign-in doesn't expire while you use it: every visit extends it to 400 days.
 - A failure **before** pressing Post is retried automatically (up to 3 times). A failure **after** pressing Post is never retried, because the video may already be live. The same applies to posts interrupted by a server restart.
@@ -98,45 +98,36 @@ Notes: the Docker image includes Chromium. `npm run dev` finds an installed Chro
 
 Set `PUBLISH_DRY_RUN=true` to try posting, scheduling and auto-publish safely: logins still open the real browser, but posts are simulated and marked *Demo mode*.
 
-### Auto-update on `git push` (private GitHub repo)
+### Updating the server
 
-The `updater` service tracks your private repository using a username + token from `.env`:
+There is no auto-updater: a push to GitHub doesn't change the server until you deploy it. On the server:
 
-```
-GITHUB_USERNAME=panhavad
-GITHUB_TOKEN=github_pat_xxx          # fine-grained PAT, "Contents: Read-only" on the repo
-GITHUB_REPO=panhavad/slientclip
-GITHUB_BRANCH=main
-GITHUB_WEBHOOK_SECRET=<random string>
-UPDATE_POLL_INTERVAL=60              # fallback polling in seconds, 0 = webhook only
+```bash
+cd slientclip
+git pull
+GIT_COMMIT=$(git rev-parse HEAD) docker compose up -d --build --remove-orphans
 ```
 
-- **Webhook (instant):** GitHub repo → Settings → Webhooks → Add webhook
-  - Payload URL: `https://clips.example.com/hooks/github`
-  - Content type: `application/json`, Secret: `GITHUB_WEBHOOK_SECRET`, events: *Just the push event*
-- **Polling (no public URL needed):** the updater checks the branch every `UPDATE_POLL_INTERVAL` seconds.
-
-On a new commit it runs `git reset --hard origin/<branch>` and `docker compose up -d --build app` from the checkout (so a local `docker-compose.override.yml` is honoured). Clips and the database live in the `data` volume and survive updates. If files under `updater/` change, it rebuilds itself through a one-shot helper container. Status: `docker compose exec updater wget -qO- localhost:9000/status`.
-
-> The updater mounts `/var/run/docker.sock` so it can rebuild containers — run it only on a host you control.
+Clips, logins and the database live in the `data` volume and survive updates. `--remove-orphans` also removes the `updater` container left over from older versions, which had an auto-updater.
 
 ### Which version is deployed?
 
 The running release is shown as a badge next to the logo (hover it for the commit, build time and server start time), on the sign-in page, and under **Admin → Deployed version**. `GET /healthz` returns the same data as JSON, e.g. `{"version":"1.5.0","commit":"9a36007","builtAt":"…"}`.
 
 - The version number comes from `package.json` — bump it for each release (`npm version minor --no-git-tag-version`).
-- The commit and build time are stamped into the image. The updater passes the commit it deploys automatically; for a manual build pass it yourself: `GIT_COMMIT=$(git rev-parse HEAD) docker compose up -d --build app`. Local `npm run dev` reads the commit from git.
+- The commit and build time are stamped into the image when you pass `GIT_COMMIT` as above. Local `npm run dev` reads the commit from git.
 - When a new build is deployed while someone has the app open, a **New version · Reload** button appears in the top bar.
 
 ## Using it
 
 1. Sign in (the first account is the administrator; later sign-ups wait in **Admin → Accounts** until approved) → **Streamers** → paste Twitch links, or use **Find streamers**: search channels **by name**, or pick a **category** (most watched first, or search one) to see who's live in it now, sorted by viewers and optionally filtered by language, then **Add** with one click.
 2. **Live monitor** → choose **Browser** or **Server**, then (browser) **Background** or **Foreground** → **Start watching**.
-   - **Server** keeps watching and clipping after you close the page; come back any time to see progress and clips. The choice survives server restarts and auto-updates.
+   - **Server** keeps watching and clipping after you close the page; come back any time to see progress and clips. The choice survives server restarts and updates.
    - Foreground opens a window per streamer (or one grid window). If the browser blocks pop-ups, allow them for the site or use **Watch in window** per streamer.
    - Each streamer is watched by exactly one window/tab at a time (Web Locks), so modes can be mixed safely.
 3. When chat explodes, the card shows *Capturing → Rendering 9:16 → Saved*. **Clip now** captures manually.
 4. **Clips** → each card has **YouTube / TikTok / Instagram** buttons: one click (and a confirm) posts the clip right away. If that account isn't logged in yet, the login opens first, and the button shows whether the clip is posting, scheduled or already posted. Open a clip to tweak title/description/hashtags/caption (re-render), or to **Schedule** a post (or *post manually* if the account isn't linked). Downloaded/posted clips leave the *New* list.
+   - **Select** (Clips toolbar) turns on checkboxes: tick clips or **Select all** in the current tab (New / All / Downloaded / Posted), then **Delete** them or **Mark published**. Published clips (ones you posted yourself) move to *Posted*, are never auto-posted or scheduled again, and are deleted automatically 24 hours later (`PUBLISHED_TTL_HOURS`). **Unmark** keeps a clip.
 5. **Schedule** → turn on **Auto-publish**. Per platform, choose **Random times** (e.g. *4 videos a day between 09:00 and 23:00*; the times are picked for you, spread over the window and different each day) or **Fixed times**, then the days and a minimum viral score. The calendar shows what goes out when; drag a post to another day, or click it to post now, reschedule, retry or unschedule.
 
 ### Accounts & administration

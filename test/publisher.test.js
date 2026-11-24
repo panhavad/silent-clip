@@ -130,3 +130,38 @@ test('auto-publish in random mode plans N posts a day at system-picked times', a
   await call('/api/autopublish', { method: 'PUT', body: { seed: 'shuffled1' } });
   assert.notDeepEqual((await autoPlan()).map((p) => p.scheduledAt).sort(), plan.map((p) => p.scheduledAt).sort());
 });
+
+test('bulk select: mark published (off the schedule, deleted after 24 h), unmark, and delete', async () => {
+  const { purgePublished } = await import('../server/store.js');
+  const { db } = await import('../server/db.js');
+  const range = () => `/api/posts?from=${Date.now()}&to=${Date.now() + 8 * 86400000}`;
+  const autoClipIds = async () => new Set((await call(range())).data.filter((p) => p.source === 'auto' && p.status === 'scheduled').map((p) => p.clipId));
+  const a = await uploadClip('Bulk A', 99);
+  const b = await uploadClip('Bulk B', 98);
+  const c = await uploadClip('Bulk C', 97);
+  await call('/api/autopublish', { method: 'PUT', body: { enabled: true, timezone: 'UTC', minScore: 50, platforms: { tiktok: { mode: 'random', perDay: 3, from: '10:00', to: '22:00' } } } });
+  assert.ok((await autoClipIds()).has(a.id), 'best clip is planned before marking');
+
+  const marked = await call('/api/clips/bulk', { method: 'POST', body: { action: 'published', ids: [a.id, b.id, 'not-mine'] } });
+  assert.deepEqual([marked.status, marked.data.done], [200, 2]);
+  const planned = await autoClipIds();
+  assert.ok(!planned.has(a.id) && !planned.has(b.id), 'published clips leave the schedule and are not re-planned');
+  const lib = (await call('/api/clips?filter=posted')).data;
+  const ca = lib.clips.find((x) => x.id === a.id);
+  assert.ok(ca.publishedAt && !ca.isNew && ca.deletesAt - ca.publishedAt === 24 * 3600000, 'shown under Posted with a 24 h deadline');
+  const later = await call('/api/posts', { method: 'POST', body: { clipId: a.id, platform: 'tiktok', scheduledAt: Date.now() + 3600000 } });
+  assert.equal(later.status, 409, 'a published clip cannot be scheduled by hand either');
+
+  await call('/api/clips/bulk', { method: 'POST', body: { action: 'unpublished', ids: [b.id] } });
+  assert.equal((await call(`/api/clips/${b.id}`)).data.publishedAt, null);
+
+  assert.equal(purgePublished(Date.now() + 23 * 3600000), 0, 'kept for 24 h');
+  assert.equal(purgePublished(Date.now() + 24 * 3600000 + 1000), 1, 'then deleted (only the still-published one)');
+  assert.equal((await call(`/api/clips/${a.id}`)).status, 404);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM posts WHERE clip_id = ?').get(a.id).n, 0);
+
+  const del = await call('/api/clips/bulk', { method: 'POST', body: { action: 'delete', ids: [b.id, c.id] } });
+  assert.equal(del.data.done, 2);
+  assert.equal((await call(`/api/clips/${c.id}`)).status, 404);
+  assert.equal((await call('/api/clips/bulk', { method: 'POST', body: { action: 'nope', ids: [b.id] } })).status, 400);
+});

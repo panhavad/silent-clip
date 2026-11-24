@@ -9,13 +9,13 @@ import {
   googleConfigured, googleStart, googleCallback,
 } from './auth.js';
 import { masterPlaylist } from './twitch.js';
-import { router as publisher, startScheduler } from './publisher.js';
+import { router as publisher, startScheduler, planUser } from './publisher.js';
 import { router as socialRouter, startSessionKeepAlive } from './social/index.js';
 import { closeAllSessions } from './social/browser.js';
 import { router as admin } from './admin.js';
 import { router as backup } from './backup.js';
 import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
-import { sanitizeMeta, insertClip, enforceStorageLimit, removeClip, storageUsage } from './store.js';
+import { sanitizeMeta, insertClip, enforceStorageLimit, removeClip, storageUsage, PUBLISHED_TTL_MS, startClipJanitor } from './store.js';
 import { buildInfo } from './version.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -27,19 +27,6 @@ app.set('trust proxy', true);
 app.disable('x-powered-by');
 
 app.get('/healthz', (_req, res) => res.json({ ok: true, ...buildInfo }));
-
-// GitHub push webhook -> forwarded verbatim to the updater sidecar (it verifies the signature).
-app.post('/hooks/github', express.raw({ type: '*/*', limit: '5mb' }), async (req, res) => {
-  const target = process.env.UPDATER_URL || 'http://updater:9000/hooks/github';
-  try {
-    const headers = { 'Content-Type': req.get('content-type') || 'application/json' };
-    for (const h of ['x-hub-signature-256', 'x-github-event', 'x-github-delivery']) if (req.get(h)) headers[h] = req.get(h);
-    const r = await fetch(target, { method: 'POST', headers, body: req.body });
-    res.status(r.status).send(await r.text());
-  } catch (e) {
-    res.status(502).json({ error: `Updater unreachable: ${e.message}` });
-  }
-});
 
 app.use(express.json({ limit: '1mb' }));
 app.use(loadUser);
@@ -174,7 +161,8 @@ export function clipRow(r) {
     hashtags: json(r.hashtags, []), caption: r.caption, viral: json(r.viral, {}),
     duration: r.duration, width: r.width, height: r.height, size: r.size,
     hasSource: Boolean(r.source_file), createdAt: r.created_at, downloadedAt: r.downloaded_at, posted,
-    isNew: !r.downloaded_at && Object.keys(posted).length === 0,
+    publishedAt: r.published_at || null, deletesAt: r.published_at ? r.published_at + PUBLISHED_TTL_MS : null,
+    isNew: !r.downloaded_at && !r.published_at && Object.keys(posted).length === 0,
     videoUrl: `/api/clips/${r.id}/video`, thumbUrl: r.thumb_file ? `/api/clips/${r.id}/thumb` : null,
   };
 }
@@ -211,11 +199,43 @@ app.get('/api/clips', (req, res) => {
     c.scheduled = scheduled[c.id] || [];
     if (c.isNew) counts.new++;
     if (c.downloadedAt) counts.downloaded++;
-    if (Object.keys(c.posted).length) counts.posted++;
+    if (Object.keys(c.posted).length || c.publishedAt) counts.posted++;
   }
   const f = req.query.filter;
-  const filtered = rows.filter((c) => (f === 'new' ? c.isNew : f === 'downloaded' ? c.downloadedAt : f === 'posted' ? Object.keys(c.posted).length : true));
+  const filtered = rows.filter((c) => (f === 'new' ? c.isNew : f === 'downloaded' ? c.downloadedAt : f === 'posted' ? Object.keys(c.posted).length || c.publishedAt : true));
   res.json({ clips: filtered, counts, storage: storageUsage(req.user.id) });
+});
+
+// Act on many clips at once (the library's selection bar): delete them, or mark them published / not published.
+app.post('/api/clips/bulk', (req, res) => {
+  const { action } = req.body || {};
+  const ids = [...new Set(Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [])].slice(0, 5000);
+  if (!['delete', 'published', 'unpublished'].includes(action)) return res.status(400).json({ error: 'Unknown action' });
+  if (!ids.length) return res.status(400).json({ error: 'No clips selected' });
+  const own = db.prepare('SELECT * FROM clips WHERE id = ? AND user_id = ?');
+  const posting = db.prepare("SELECT 1 FROM posts WHERE clip_id = ? AND status = 'publishing'");
+  let done = 0;
+  let skipped = 0;
+  const now = Date.now();
+  for (const id of ids) {
+    const r = own.get(id, req.user.id);
+    if (!r) continue;
+    if (action === 'delete') {
+      // A clip that is being uploaded right now is left alone.
+      if (posting.get(id)) { skipped++; continue; }
+      removeClip(r);
+    } else if (action === 'published') {
+      db.prepare('UPDATE clips SET published_at = COALESCE(published_at, ?) WHERE id = ?').run(now, id);
+      // It's out there already, so drop its queued auto/manual posts.
+      db.prepare("UPDATE posts SET status = 'canceled' WHERE clip_id = ? AND status = 'scheduled'").run(id);
+    } else {
+      db.prepare('UPDATE clips SET published_at = NULL WHERE id = ?').run(id);
+    }
+    done++;
+  }
+  // Freed schedule slots go to the next best clips.
+  if (action !== 'unpublished') { try { planUser(req.user.id); } catch (e) { console.error('planner', e.message); } }
+  res.json({ ok: true, done, skipped });
 });
 
 app.get('/api/clips/:id', (req, res) => {
@@ -299,7 +319,7 @@ app.post('/api/clips/:id/mark', (req, res) => {
     delete posted[platform];
     db.prepare('UPDATE clips SET posted = ? WHERE id = ?').run(JSON.stringify(posted), r.id);
   } else if (action === 'new') {
-    db.prepare("UPDATE clips SET downloaded_at = NULL, posted = '{}' WHERE id = ?").run(r.id);
+    db.prepare("UPDATE clips SET downloaded_at = NULL, posted = '{}', published_at = NULL WHERE id = ?").run(r.id);
   } else {
     return res.status(400).json({ error: 'Unknown action' });
   }
@@ -316,6 +336,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   startScheduler();
   startServerWatchers();
   startSessionKeepAlive();
+  startClipJanitor();
   // Docker stops/redeploys with SIGTERM. Close the social browsers cleanly first: a killed Chrome loses the
   // login cookies Google rotated in the last minute, and reusing the old ones makes Google sign it out.
   let stopping = false;
@@ -324,7 +345,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     stopping = true;
     console.log(`[shutdown] ${sig}: closing browsers…`);
     server.close();
-    const timer = setTimeout(() => process.exit(0), 8000);
+    const timer = setTimeout(() => process.exit(0), 20000);
     timer.unref();
     await closeAllSessions().catch((e) => console.error('[shutdown] closing browsers failed:', e.message));
     process.exit(0);

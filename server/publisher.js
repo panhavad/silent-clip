@@ -210,7 +210,7 @@ export function planUser(userId, now = Date.now()) {
     return 0;
   }
   const connected = new Set(connectedPlatforms(userId));
-  const clips = db.prepare('SELECT id, viral, posted, created_at FROM clips WHERE user_id = ? AND created_at >= ?')
+  const clips = db.prepare('SELECT id, viral, posted, created_at FROM clips WHERE user_id = ? AND created_at >= ? AND published_at IS NULL')
     .all(userId, now - ap.maxAgeHours * 3600 * 1000)
     .map((c) => ({ id: c.id, score: json(c.viral, {}).score ?? 0, posted: json(c.posted, {}), createdAt: c.created_at }))
     .filter((c) => c.score >= ap.minScore)
@@ -289,6 +289,9 @@ router.post('/api/posts', (req, res) => {
   }
   const at = req.body.scheduledAt ? Number(new Date(req.body.scheduledAt)) : Date.now();
   if (!Number.isFinite(at)) return res.status(400).json({ error: 'Invalid time' });
+  if (at > Date.now() + 60000 && db.prepare('SELECT published_at FROM clips WHERE id = ?').get(clipId)?.published_at) {
+    return res.status(409).json({ error: 'This clip is marked as published, so it isn\'t scheduled. Unmark it first.' });
+  }
   // Replace any pending post of this clip on this platform.
   db.prepare("UPDATE posts SET status = 'canceled' WHERE user_id = ? AND clip_id = ? AND platform = ? AND status = 'scheduled'").run(req.user.id, clipId, platform);
   const id = createPost(req.user.id, clipId, platform, at, 'manual');

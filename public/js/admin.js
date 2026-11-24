@@ -47,7 +47,7 @@ export class AdminView {
     const buildPanel = `
       <div class="panel" style="margin-top:16px">
         <div class="section-head"><div><h2 style="margin:0">Deployed version</h2>
-          <div class="muted small">The release this server is running. It changes when the auto-updater deploys a new push.</div></div></div>
+          <div class="muted small">The release this server is running. It changes when a new build is deployed.</div></div></div>
         <div class="build-info">
           <div><span class="muted small">Version</span><b>v${esc(build?.version || '?')}</b></div>
           <div><span class="muted small">Commit</span><b class="mono">${esc(build?.commit || 'unknown')}</b></div>

@@ -7,6 +7,7 @@ import { chromium } from 'playwright-core';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { DATA_DIR } from '../db.js';
 
@@ -118,11 +119,6 @@ export class BrowserSession {
     this.headed = headed && canShowWindow();
     const dir = profileDir(this.userId, this.platform);
     fs.mkdirSync(dir, { recursive: true });
-    // Only this server opens these profiles, and none is open now, so any lock is left over from a killed
-    // process (e.g. a container restart, which also changes the hostname Chrome stamps into the lock).
-    for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
-      try { fs.rmSync(path.join(dir, f), { force: true }); } catch { /* not there */ }
-    }
     const args = [
       '--disable-blink-features=AutomationControlled',
       '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage',
@@ -131,6 +127,7 @@ export class BrowserSession {
     ];
     let identity = null;
     try {
+      await clearStaleLock(dir);
       if (!this.headed) {
         identity = await realIdentity();
         // Browser-wide, so background/service workers send the same UA string as the page.
@@ -144,6 +141,8 @@ export class BrowserSession {
         args,
         ignoreDefaultArgs: ['--enable-automation'],
         acceptDownloads: false,
+        // The server's own shutdown handler closes browsers and waits for them to save cookies.
+        handleSIGTERM: false, handleSIGINT: false, handleSIGHUP: false,
       });
     } catch (e) {
       this.release();
@@ -264,6 +263,41 @@ export class BrowserSession {
     const ctx = this.context;
     this.context = null;
     await ctx?.close().catch(() => {});
+    // close() returns before Chrome has finished writing cookies and exiting; wait for it to let go.
+    if (ctx) await waitForUnlock(profileDir(this.userId, this.platform), 10000);
+  }
+}
+
+// Chrome (Linux/macOS) marks a profile in use with a SingletonLock symlink to "<hostname>-<pid>".
+const lockOwner = (dir) => {
+  try {
+    const m = /^(.*)-(\d+)$/.exec(fs.readlinkSync(path.join(dir, 'SingletonLock')));
+    return m ? { host: m[1], pid: Number(m[2]) } : { host: '', pid: 0 };
+  } catch { return null; }
+};
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+// After a container restart the old PID may belong to another process; on Linux check it's a Chrome for this profile.
+const usesProfile = (pid, dir) => {
+  try { return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes(path.resolve(dir)); } catch { return process.platform !== 'linux'; }
+};
+const lockLive = (o, dir) => o && o.host === os.hostname() && pidAlive(o.pid) && usesProfile(o.pid, dir);
+
+async function waitForUnlock(dir, ms) {
+  for (const end = Date.now() + ms; lockLive(lockOwner(dir), dir) && Date.now() < end;) await new Promise((r) => setTimeout(r, 100));
+}
+
+/**
+ * Remove a lock left by a Chrome that is gone (killed, or from an earlier container: a redeploy changes
+ * the hostname and Chrome then refuses the profile as "in use on another computer"). A Chrome of this
+ * server that is still shutting down is waited for instead.
+ */
+async function clearStaleLock(dir) {
+  await waitForUnlock(dir, 10000);
+  const owner = lockOwner(dir);
+  if (!owner) return;
+  if (lockLive(owner, dir)) throw new BusyError('This account\'s browser profile is already open');
+  for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    try { fs.rmSync(path.join(dir, f), { force: true }); } catch { /* not there */ }
   }
 }
 

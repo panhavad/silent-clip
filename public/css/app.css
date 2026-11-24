@@ -458,3 +458,20 @@ body:has(.modal-back) { overflow: hidden; }
 .acct-history li { margin: 2px 0; }
 .acct-history li.good::marker { color: var(--ok, #3fb950); }
 .acct-history li.bad::marker { color: var(--warn); }
+
+/* Clip library: selection mode */
+.select-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -4px 0 14px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--accent-2); border-radius: var(--radius); position: sticky; top: 8px; z-index: 5; }
+.select-bar .spacer { flex: 1; }
+.btn.select-toggle.active { border-color: var(--accent-2); color: var(--accent-2); }
+.clip-card .sel-box { display: none; position: absolute; top: 8px; right: 8px; z-index: 2; width: 24px; height: 24px; border-radius: 7px; border: 2px solid #fff; background: rgba(0, 0, 0, .45); color: #fff; align-items: center; justify-content: center; }
+.clip-card .sel-box svg { width: 15px; height: 15px; opacity: 0; }
+.clip-grid.selecting .clip-card .sel-box { display: flex; }
+.clip-grid.selecting .clip-card .flags { right: 40px; }
+.clip-grid.selecting .card-publish { pointer-events: none; opacity: .45; }
+.clip-grid.selecting .clip-card:hover { transform: none; }
+.clip-card.selected { border-color: var(--accent-2); box-shadow: 0 0 0 2px var(--accent-2); }
+.clip-card.selected .sel-box { background: var(--accent-2); border-color: var(--accent-2); }
+.clip-card.selected .sel-box svg { opacity: 1; }
+.badge.published { background: var(--ok); color: #06210f; }
+.clip-card .deletes-note { color: var(--warn); display: flex; align-items: center; gap: 4px; }
+.clip-card .deletes-note svg { width: 13px; height: 13px; }

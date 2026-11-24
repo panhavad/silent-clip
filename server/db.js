@@ -120,6 +120,8 @@ if (db.prepare('PRAGMA user_version').get().user_version < 1) {
            PRAGMA user_version = 1;`);
 }
 const postCols = new Set(db.prepare('PRAGMA table_info(posts)').all().map((c) => c.name));
+// Set when the user marks a clip as published by hand: it leaves the auto-post queue and is deleted after a day.
+if (!new Set(db.prepare('PRAGMA table_info(clips)').all().map((c) => c.name)).has('published_at')) db.exec('ALTER TABLE clips ADD COLUMN published_at INTEGER');
 if (!postCols.has('step')) db.exec('ALTER TABLE posts ADD COLUMN step TEXT');
 if (!postCols.has('shot')) db.exec('ALTER TABLE posts ADD COLUMN shot INTEGER NOT NULL DEFAULT 0');
 if (!postCols.has('finished_at')) db.exec('ALTER TABLE posts ADD COLUMN finished_at INTEGER');

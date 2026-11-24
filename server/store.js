@@ -89,3 +89,20 @@ export function enforceStorageLimit(userId, keepId = '') {
 }
 
 export { json };
+
+// Clips the user marked as published are removed this long afterwards (PUBLISHED_TTL_HOURS, default 24).
+export const PUBLISHED_TTL_MS = Number(process.env.PUBLISHED_TTL_HOURS ?? 24) * 3600 * 1000;
+
+/** Delete clips marked published more than PUBLISHED_TTL_MS ago (not while one is being posted). */
+export function purgePublished(now = Date.now()) {
+  const rows = db.prepare(`SELECT * FROM clips c WHERE c.published_at IS NOT NULL AND c.published_at <= ?
+      AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id = c.id AND p.status = 'publishing')`).all(now - PUBLISHED_TTL_MS);
+  for (const r of rows) removeClip(r);
+  return rows.length;
+}
+
+export function startClipJanitor() {
+  const run = () => { try { const n = purgePublished(); if (n) console.log(`[clips] removed ${n} published clip(s) older than ${PUBLISHED_TTL_MS / 3600000} h`); } catch (e) { console.error('clip janitor', e.message); } };
+  run();
+  setInterval(run, 10 * 60000).unref();
+}

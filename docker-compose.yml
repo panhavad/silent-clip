@@ -28,28 +28,8 @@ services:
       MAX_SERVER_WATCHERS: ${MAX_SERVER_WATCHERS:-50}
       TWITCH_AUTH_TOKEN: ${TWITCH_AUTH_TOKEN:-}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-300}
-      UPDATER_URL: http://updater:9000/hooks/github
     volumes:
       - data:/data
-
-  # Watches the private GitHub repo and rebuilds `app` on every push.
-  updater:
-    build: ./updater
-    image: slientclip-updater
-    restart: unless-stopped
-    environment:
-      GITHUB_USERNAME: ${GITHUB_USERNAME:-}
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      GITHUB_REPO: ${GITHUB_REPO:-}
-      GITHUB_BRANCH: ${GITHUB_BRANCH:-main}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
-      UPDATE_POLL_INTERVAL: ${UPDATE_POLL_INTERVAL:-60}
-      GIT_REMOTE_URL: ${GIT_REMOTE_URL:-}
-      COMPOSE_PROJECT: slientclip
-      REPO_DIR: /repo
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${REPO_HOST_PATH:-.}:/repo
 
 volumes:
   data:

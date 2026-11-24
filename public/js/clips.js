@@ -33,13 +33,80 @@ export class ClipLibrary {
           <button data-f="downloaded">Downloaded <span class="c-downloaded"></span></button>
           <button data-f="posted">Posted <span class="c-posted"></span></button>
         </div>
+        <button class="btn sm select-toggle" title="Select clips to delete or mark as published">${icon('check')}Select</button>
         <button class="btn sm caption-all" title="Re-render clips that don't have subtitles yet">${icon('captions')}Caption all clips</button>
         <button class="btn sm refresh">${icon('refresh')}Refresh</button>
       </div>
+      <div class="select-bar hidden">
+        <b class="sel-count">0 selected</b>
+        <button class="btn sm sel-all"></button>
+        <button class="btn sm ghost sel-none">Clear</button>
+        <span class="spacer"></span>
+        <button class="btn sm primary sel-publish" title="You published these yourself: they leave the auto-post schedule and are deleted automatically after 24 hours">${icon('check')}Mark published</button>
+        <button class="btn sm sel-unpublish hidden" title="Keep these clips: undo Mark published">${icon('undo')}Unmark</button>
+        <button class="btn sm danger sel-delete">${icon('trash')}Delete</button>
+        <button class="btn sm ghost sel-done" title="Leave selection mode">${icon('x')}</button>
+      </div>
       <div class="clip-grid"></div>`;
-    root.querySelectorAll('.filters button').forEach((b) => { b.onclick = () => { this.filter = b.dataset.f; this.load(); }; });
+    this.selecting = false;
+    this.selected = new Set();
+    root.querySelectorAll('.filters button').forEach((b) => { b.onclick = () => { this.filter = b.dataset.f; this.selected.clear(); this.load(); }; });
     root.querySelector('.refresh').onclick = () => this.load();
     root.querySelector('.caption-all').onclick = (e) => this.captionAll(e.currentTarget).catch((err) => toast(err.message, 'error'));
+    root.querySelector('.select-toggle').onclick = () => this.setSelecting(!this.selecting);
+    root.querySelector('.sel-done').onclick = () => this.setSelecting(false);
+    root.querySelector('.sel-none').onclick = () => { this.selected.clear(); this.syncSelection(); };
+    root.querySelector('.sel-all').onclick = () => {
+      const all = this.clips.length && this.clips.every((c) => this.selected.has(c.id));
+      this.selected = all ? new Set() : new Set(this.clips.map((c) => c.id));
+      this.syncSelection();
+    };
+    root.querySelector('.sel-publish').onclick = () => this.bulk('published').catch((err) => toast(err.message, 'error'));
+    root.querySelector('.sel-unpublish').onclick = () => this.bulk('unpublished').catch((err) => toast(err.message, 'error'));
+    root.querySelector('.sel-delete').onclick = () => this.bulk('delete').catch((err) => toast(err.message, 'error'));
+  }
+
+  setSelecting(on) {
+    this.selecting = on;
+    if (!on) this.selected.clear();
+    this.root.querySelector('.select-toggle').classList.toggle('active', on);
+    this.root.querySelector('.select-bar').classList.toggle('hidden', !on);
+    this.root.querySelector('.clip-grid').classList.toggle('selecting', on);
+    this.root.querySelectorAll('.clip-card .thumb video').forEach((v) => v.remove());
+    this.syncSelection();
+  }
+
+  /** Reflect the selection on the cards and the bar. */
+  syncSelection() {
+    const ids = new Set(this.clips.map((c) => c.id));
+    for (const id of this.selected) if (!ids.has(id)) this.selected.delete(id);
+    this.root.querySelectorAll('.clip-card[data-id]').forEach((card) => card.classList.toggle('selected', this.selected.has(card.dataset.id)));
+    const n = this.selected.size;
+    const chosen = this.clips.filter((c) => this.selected.has(c.id));
+    const all = this.clips.length > 0 && n === this.clips.length;
+    this.root.querySelector('.sel-count').textContent = `${n} selected`;
+    this.root.querySelector('.sel-all').textContent = all ? 'Unselect all' : `Select all in ${this.filterLabel()} (${this.clips.length})`;
+    this.root.querySelector('.sel-all').disabled = !this.clips.length;
+    for (const k of ['.sel-delete', '.sel-none']) this.root.querySelector(k).disabled = !n;
+    this.root.querySelector('.sel-publish').disabled = !chosen.some((c) => !c.publishedAt);
+    this.root.querySelector('.sel-unpublish').classList.toggle('hidden', !chosen.some((c) => c.publishedAt));
+  }
+
+  filterLabel() {
+    return { new: 'New', all: 'All', downloaded: 'Downloaded', posted: 'Posted' }[this.filter] || 'this view';
+  }
+
+  async bulk(action) {
+    const ids = [...this.selected];
+    if (!ids.length) return;
+    const n = ids.length === 1 ? '1 clip' : `${ids.length} clips`;
+    if (action === 'delete' && !confirm(`Delete ${n}? The videos are removed from the server and any scheduled posts of them are canceled. This can't be undone.`)) return;
+    if (action === 'published' && !confirm(`Mark ${n} as published?\n\nThey are taken off the auto-post schedule and deleted automatically after 24 hours.`)) return;
+    const r = await api('/api/clips/bulk', { method: 'POST', body: { action, ids } });
+    const verb = { delete: 'Deleted', published: 'Marked as published', unpublished: 'Unmarked' }[action];
+    toast(`${verb}: ${r.done === 1 ? '1 clip' : `${r.done} clips`}${r.skipped ? ` (${r.skipped} skipped: being posted right now)` : ''}${action === 'published' ? '. They will be deleted in 24 hours.' : ''}`, 'ok');
+    this.selected.clear();
+    await this.load();
   }
 
   async load() {
@@ -67,13 +134,17 @@ export class ClipLibrary {
     this.onCounts(counts);
     if (!clips.length) {
       grid.innerHTML = `<div class="empty" style="grid-column:1/-1">${this.filter === 'new' ? 'No new clips yet — start watching and viral moments will appear here automatically.' : 'No clips in this view.'}</div>`;
+      this.syncSelection();
       return;
     }
+    const leftOf = (t) => { const h = Math.max(0, (t - Date.now()) / 3600000); return h >= 1 ? `${Math.round(h)} h` : `${Math.max(1, Math.round(h * 60))} min`; };
     grid.innerHTML = clips.map((c) => `
-      <div class="clip-card" data-id="${c.id}">
+      <div class="clip-card ${this.selected.has(c.id) ? 'selected' : ''}" data-id="${c.id}">
         <div class="thumb lazy-bg" data-bg="${esc(c.thumbUrl || '')}">
+          <span class="sel-box" aria-hidden="true">${icon('check')}</span>
           <div class="flags">
             ${c.isNew ? '<span class="badge new">New</span>' : ''}
+            ${c.publishedAt ? `<span class="badge published" title="Marked published ${timeAgo(c.publishedAt)}. Not auto-posted, and deleted automatically in ${leftOf(c.deletesAt)}.">Published</span>` : ''}
             ${c.viral.subtitles?.length ? '<span class="badge" title="Has spoken subtitles">CC</span>' : ''}
             ${c.downloadedAt ? `<span class="plat dl" title="Downloaded">${icon('download')}</span>` : ''}
           </div>
@@ -82,24 +153,31 @@ export class ClipLibrary {
         <div class="info">
           <div class="title">${esc(c.title)}</div>
           <div class="muted small">${esc(c.streamer)} · ${timeAgo(c.createdAt)}</div>
+          ${c.publishedAt ? `<div class="small deletes-note">${icon('clock')} Deletes in ${leftOf(c.deletesAt)}</div>` : ''}
           <div class="card-publish">${PLATFORMS.map((p) => this.publishButton(c, p)).join('')}</div>
         </div>
       </div>`).join('');
     lazyImages(grid);
     grid.querySelectorAll('.clip-card').forEach((card) => {
       const clip = clips.find((c) => c.id === card.dataset.id);
-      card.onclick = () => this.open(clip);
+      card.onclick = () => {
+        if (!this.selecting) return this.open(clip);
+        if (this.selected.has(clip.id)) this.selected.delete(clip.id); else this.selected.add(clip.id);
+        this.syncSelection();
+      };
       card.querySelectorAll('.pub').forEach((b) => {
         b.onclick = (e) => { e.stopPropagation(); this.quickPost(clip, b.dataset.p, b).catch((err) => toast(err.message, 'error')); };
       });
       const thumb = card.querySelector('.thumb');
       card.onmouseenter = () => {
+        if (this.selecting) return;
         const v = document.createElement('video');
         Object.assign(v, { src: clip.videoUrl, muted: true, autoplay: true, loop: true, playsInline: true });
         thumb.prepend(v);
       };
       card.onmouseleave = () => thumb.querySelector('video')?.remove();
     });
+    this.syncSelection();
     // While a post from this list is running, keep the buttons' state fresh.
     clearTimeout(this.pollTimer);
     const active = clips.some((c) => (c.scheduled || []).some((s) => s.status === 'publishing' || s.at <= Date.now() + 60000));
