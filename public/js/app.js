@@ -15,6 +15,7 @@ import { renderVersion, watchForUpdates } from './version.js';
 import { skeleton, showLoading } from './loader.js';
 import { mountStreamerSearch } from './streamer-search.js';
 import { lockApp, warnExpiry } from './expired.js';
+import { startTour, appTourSteps } from './tour.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -518,3 +519,18 @@ if (accessLocked) {
 }
 const hash = location.hash.slice(1);
 if (TABS.includes(hash)) showTab(hash);
+
+// ---------- welcome tour ----------
+function runTour({ firstRun = false } = {}) {
+  const from = $('.tab.active')?.dataset.tab || 'live';
+  startTour(appTourSteps({ isAdmin: me.role === 'admin', name: me.name }), {
+    showTab,
+    onDone: () => {
+      // First visit: end where the next step is (adding a streamer); otherwise back where they were.
+      showTab(firstRun ? 'streamers' : from);
+      if (firstRun) api('/api/me/tour', { method: 'POST' }).catch(() => {});
+    },
+  });
+}
+$('.help-btn').onclick = () => runTour();
+if (!me.tourSeen && !accessLocked) setTimeout(() => runTour({ firstRun: true }), 400);

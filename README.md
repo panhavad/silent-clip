@@ -58,6 +58,7 @@ Finished clips are posted to YouTube / TikTok / Instagram **without API keys**, 
 **Deployment**
 - A **product landing page** at `/`: hero, how it works, features with screenshots, use cases, pricing (monthly / yearly), FAQ and sign-up buttons. The app lives at `/app`: signed-out visitors are always sent to the landing page, signed-in users opening `/` go straight to the app, and signing out or an ended session returns to the landing page. Copy and prices live in `public/landing.html`.
 - `docker compose` with Chromium and ffmpeg included; you deploy updates with `git pull` + `docker compose up -d --build`.
+- **Welcome tour** for new accounts on their first sign-in: it walks through finding streamers, starting to watch, clips, auto-publish, social accounts (and Admin for admins), switching tabs and spotlighting each part. Back / Next / Skip, arrow keys and Esc work. The **?** button in the top bar replays it any time. Accounts that existed before the tour aren't shown it automatically.
 - Responsive UI: phones get scrolling tabs, two clips per row, a full-screen editor, a one-column calendar and card-style admin tables.
 
 ## Architecture

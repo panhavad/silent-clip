@@ -120,7 +120,14 @@ app.get('/api/me', (req, res) => {
   res.json({
     id: u.id, email: u.email, name: u.name, avatar: u.avatar, google: Boolean(u.google_id), role: u.role, serverWatch: serverWatchAllowed(u), settings: userSettings(u),
     expiresAt: u.role === 'admin' ? null : u.expires_at || null, expired: accessExpired(u), contact: accessExpired(u) ? adminContact() : null,
+    tourSeen: Boolean(u.tour_seen_at),
   });
+});
+
+// The welcome tour was finished or skipped: don't open it on its own again (the ? button still replays it).
+app.post('/api/me/tour', (req, res) => {
+  db.prepare('UPDATE users SET tour_seen_at = ? WHERE id = ?').run(Date.now(), req.user.id);
+  res.json({ ok: true });
 });
 
 app.put('/api/settings', (req, res) => {

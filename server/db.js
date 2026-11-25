@@ -122,6 +122,12 @@ if (!userCols.has('storage_limit')) db.exec('ALTER TABLE users ADD COLUMN storag
 if (!userCols.has('server_watch')) db.exec('ALTER TABLE users ADD COLUMN server_watch INTEGER NOT NULL DEFAULT 1');
 // Access end date an admin set (ms); NULL = never. After it passes the user can still sign in and look, but can't use anything.
 if (!userCols.has('expires_at')) db.exec('ALTER TABLE users ADD COLUMN expires_at INTEGER');
+// When the user finished or skipped the welcome tour; NULL = show it on their next visit. Accounts that existed
+// before the tour was added already know the app, so they're marked as seen.
+if (!userCols.has('tour_seen_at')) {
+  db.exec('ALTER TABLE users ADD COLUMN tour_seen_at INTEGER');
+  db.prepare('UPDATE users SET tour_seen_at = ?').run(Date.now());
+}
 // v1.9: watching never starts on its own unless chosen. Auto-start used to default to on and was saved with
 // every settings form, so switch it off once for existing accounts; users can turn it back on in Settings.
 if (db.prepare('PRAGMA user_version').get().user_version < 1) {

@@ -307,3 +307,14 @@ test('admin can set an access expiry: expired users can look but not use anythin
   assert.equal((await call('/api/settings', { method: 'PUT', body: { sensitivity: 9 } })).status, 200);
   cookie = adminCookie;
 });
+
+test('the welcome tour opens once for new accounts and is remembered when finished', async () => {
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  await call('/api/admin/users', { method: 'POST', body: { email: 'newbie@x.co', password: 'password123' } });
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'newbie@x.co', password: 'password123' } });
+  assert.equal((await call('/api/me')).data.tourSeen, false, 'new account: show the tour');
+  assert.equal((await call('/api/me/tour', { method: 'POST' })).status, 200);
+  assert.equal((await call('/api/me')).data.tourSeen, true, 'not shown again');
+});
