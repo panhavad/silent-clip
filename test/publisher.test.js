@@ -198,7 +198,7 @@ test('deleting a clip keeps its past posts in the schedule as history', async ()
   assert.equal((await realFetch(base + kept.clip.thumbUrl, { headers: { cookie } })).status, 404, 'removing the entry cleans up its thumbnail');
 });
 
-test('Chrome extension: pair, take over YouTube, claim a due post, upload and report results', async () => {
+test('Chrome extension: pair, post YouTube through it, claim a due post, upload and report results', async () => {
   const { db } = await import('../server/db.js');
   const { sweepStaleClaims } = await import('../server/extension.js');
   const ext = async (p, { method = 'GET', body, token } = {}) => {
@@ -215,7 +215,8 @@ test('Chrome extension: pair, take over YouTube, claim a due post, upload and re
 
   await ext('/api/ext/hello', { method: 'POST', token, body: { youtube: { loggedIn: true, name: 'Tmor Model' }, version: '1.0.0' } });
   const yt = (await call('/api/accounts')).data.accounts.find((a) => a.platform === 'youtube');
-  assert.deepEqual([yt.connected, yt.method, yt.displayName], [true, 'extension', 'Tmor Model']);
+  assert.deepEqual([yt.connected, yt.route, yt.via, yt.ext.name], [true, 'extension', 'auto', 'Tmor Model'], 'auto: a signed-in extension posts YouTube');
+  assert.equal(yt.loggedIn, false, 'the server-browser login is separate and untouched')
   assert.equal((await call('/api/accounts')).data.extension[0].version, '1.0.0');
 
   const clip = await uploadClip('Ext clip', 77);
@@ -248,8 +249,7 @@ test('Chrome extension: pair, take over YouTube, claim a due post, upload and re
   await ext(`/api/ext/jobs/${p2.id}/result`, { method: 'POST', token, body: { ok: false, error: 'YouTube is signed out in this Chrome', loggedOut: true } });
   assert.equal(db.prepare('SELECT status FROM posts WHERE id = ?').get(p2.id).status, 'failed');
   const out = (await call('/api/accounts')).data.accounts.find((a) => a.platform === 'youtube');
-  assert.equal(out.loggedIn, false);
-  assert.match(out.loggedOutReason, /signed out in the Chrome/);
+  assert.deepEqual([out.ext.loggedIn, out.connected, out.route], [false, false, 'server'], 'signed out in that Chrome: auto falls back to the server browser');
 
   // Signing back in (hello) restores it; an upload that goes quiet is failed by the sweeper.
   await ext('/api/ext/hello', { method: 'POST', token, body: { youtube: { loggedIn: true, name: 'Tmor Model' } } });
@@ -260,6 +260,27 @@ test('Chrome extension: pair, take over YouTube, claim a due post, upload and re
   const p3row = db.prepare('SELECT status, error FROM posts WHERE id = ?').get(p3.id);
   assert.equal(p3row.status, 'failed', 'pressed Publish then went quiet: not retried');
   assert.match(p3row.error, /stopped reporting/);
+
+  // Both ways at once: a server-browser login and the extension. "Post via" decides which one posts.
+  await call('/api/accounts/youtube/login', { method: 'POST' }); // demo server login (PUBLISH_DRY_RUN)
+  await call('/api/settings', { method: 'PUT', body: { youtubeVia: 'server' } });
+  let acc = (await call('/api/accounts')).data.accounts.find((a) => a.platform === 'youtube');
+  assert.deepEqual([acc.route, acc.loggedIn, acc.ext.loggedIn, acc.connected], ['server', true, true, true]);
+  const p4 = (await call('/api/posts', { method: 'POST', body: { clipId: (await uploadClip('Via server', 70)).id, platform: 'youtube' } })).data;
+  assert.ok(!(await ext('/api/ext/jobs', { token })).data.jobs.some((j) => j.id === p4.id), 'not sent to the extension');
+  for (let i = 0; i < 40 && db.prepare('SELECT status FROM posts WHERE id = ?').get(p4.id).status !== 'published'; i++) {
+    await runDuePosts({ wait: true });
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.equal(db.prepare('SELECT status FROM posts WHERE id = ?').get(p4.id).status, 'published', 'posted by the server browser');
+  await call('/api/settings', { method: 'PUT', body: { youtubeVia: 'extension' } });
+  acc = (await call('/api/accounts')).data.accounts.find((a) => a.platform === 'youtube');
+  assert.equal(acc.route, 'extension');
+  const p5 = (await call('/api/posts', { method: 'POST', body: { clipId: (await uploadClip('Via extension', 70)).id, platform: 'youtube' } })).data;
+  await runDuePosts({ wait: true });
+  assert.equal(db.prepare('SELECT status FROM posts WHERE id = ?').get(p5.id).status, 'scheduled', 'left for the extension');
+  assert.ok((await ext('/api/ext/jobs', { token })).data.jobs.some((j) => j.id === p5.id), 'handed to the extension');
+  await call('/api/settings', { method: 'PUT', body: { youtubeVia: 'auto' } });
 
   const zip = await realFetch(`${base}/extension.zip`);
   const buf = Buffer.from(await zip.arrayBuffer());

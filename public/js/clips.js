@@ -208,6 +208,10 @@ export class ClipLibrary {
     const accounts = await getAccounts(true);
     const acc = accountFor(accounts, platform);
     if (!acc?.connected) {
+      if (acc?.route === 'extension') {
+        toast('YouTube posts go through your Chrome extension, which isn\'t ready. Check it in Settings → Social accounts, or switch YouTube to the server browser there.', 'error');
+        return;
+      }
       toast(`Log in to ${label} once, then the clip is posted.`);
       return loginTo(platform, () => this.quickPost(clip, platform, btn));
     }

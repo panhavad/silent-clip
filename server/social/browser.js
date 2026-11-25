@@ -123,6 +123,10 @@ export class BrowserSession {
       '--disable-blink-features=AutomationControlled',
       '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage',
       `--window-size=${VIEWPORT.width + 20},${VIEWPORT.height + 140}`, '--lang=en-US',
+      // A hidden or background browser must behave like a tab someone is looking at: no timer throttling,
+      // no freezing of backgrounded pages (the site keeps refreshing its login like an open tab does).
+      '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
+      '--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling',
       ...sandboxArgs(),
     ];
     let identity = null;
@@ -186,6 +190,12 @@ export class BrowserSession {
         this.frameSeq++;
         this.lastFrameAt = Date.now();
       });
+      if (this.kind === 'keeper') {
+        // Always-open session: the page believes it is focused and visible, like a tab in front of someone.
+        // No constant screencast (it would burn CPU all day); the viewer falls back to screenshots.
+        await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+        return;
+      }
       const startCast = () => cdp.send('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: VIEWPORT.width, maxHeight: VIEWPORT.height, everyNthFrame: 1 });
       await startCast();
       // The screencast can stall after a cross-document navigation; restart it on each one.
@@ -253,9 +263,11 @@ export class BrowserSession {
   }
 
   release() {
+    const first = !this.closed;
     this.closed = true;
     sessions.delete(this.id);
     if (byProfile.get(this.key) === this) byProfile.delete(this.key);
+    if (first) for (const fn of closedListeners) { try { fn(this); } catch { /* listener error */ } }
   }
 
   async close() {
@@ -303,9 +315,22 @@ async function clearStaleLock(dir) {
 
 export const getSession = (id) => sessions.get(id) || null;
 export const profileBusy = (userId, platform) => byProfile.has(`${userId}:${platform}`);
+export const profileSession = (userId, platform) => byProfile.get(`${userId}:${platform}`) || null;
 export const liveSessions = () => [...sessions.values()];
 
+const closedListeners = new Set();
+/** Called after any browser session closes (the keeper uses it to reopen the always-open session). */
+export const onSessionClosed = (fn) => closedListeners.add(fn);
+
 export async function openSession({ userId, platform, kind, headed }) {
+  // The always-open session gives way to anything else that needs the profile (a login, a post, a check):
+  // it is closed cleanly (its fresh cookies are saved) and reopened once the other job is done.
+  const held = byProfile.get(`${userId}:${platform}`);
+  if (held?.kind === 'keeper' && kind !== 'keeper') {
+    held.yielding = true;
+    await held.yieldTo?.();
+    await held.close();
+  }
   const s = new BrowserSession({ userId, platform, kind });
   await s.start({ headed });
   return s;

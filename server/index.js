@@ -11,6 +11,7 @@ import {
 import { masterPlaylist } from './twitch.js';
 import { router as publisher, startScheduler, planUser } from './publisher.js';
 import { router as socialRouter, startSessionKeepAlive } from './social/index.js';
+import { startSessionKeepers } from './social/keeper.js';
 import { closeAllSessions } from './social/browser.js';
 import { router as extensionRouter, startExtensionSweeper } from './extension.js';
 import { router as admin } from './admin.js';
@@ -18,6 +19,7 @@ import { router as backup } from './backup.js';
 import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
 import { sanitizeMeta, insertClip, enforceStorageLimit, removeClip, storageUsage, PUBLISHED_TTL_MS, startClipJanitor } from './store.js';
 import { buildInfo } from './version.js';
+import { assetsVersion, sendPage, versionedAssets, htmlPages } from './assets.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 8080);
@@ -27,10 +29,13 @@ const app = express();
 app.set('trust proxy', true);
 app.disable('x-powered-by');
 
-app.get('/healthz', (_req, res) => res.json({ ok: true, ...buildInfo }));
+// `assets` is the fingerprint of the app code; open tabs compare it with the code they run to update themselves.
+app.get('/healthz', (_req, res) => res.set('Cache-Control', 'no-store').json({ ok: true, ...buildInfo, assets: assetsVersion() }));
 
 app.use(express.json({ limit: '1mb' }));
 app.use(loadUser);
+// API answers are always live data; routes that may be cached (thumbnails) set their own header.
+app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
 // Static assets (no build step) + client-side ffmpeg.wasm served from node_modules.
 const nm = (p) => path.join(ROOT, 'node_modules', p);
@@ -42,16 +47,17 @@ app.use('/vendor/transformers', express.static(nm('@huggingface/transformers/dis
 app.use('/vendor/ort', express.static(nm('onnxruntime-web/dist'), vendorOpts));
 // "/" is the product page and "/app" is the app; each address always returns the same page, so a cached
 // landing page can never stand in for the app (or the other way round).
-const noStore = { 'Cache-Control': 'no-store', Vary: 'Cookie' };
-app.get('/', (req, res) => (req.user ? res.redirect(302, '/app')
-  : res.set(noStore).sendFile(path.join(ROOT, 'public', 'landing.html'))));
+// Pages are never cached and load their code from /v/<fingerprint>/, so a release reaches every browser at once.
+app.get('/', (req, res) => (req.user ? res.redirect(302, '/app') : sendPage(res, 'landing.html')));
 app.get(['/app', '/app/', '/index.html'], (req, res) => {
   if (!req.user) return res.redirect(302, '/');
   if (req.path !== '/app') return res.redirect(302, '/app');
-  res.set(noStore).sendFile(path.join(ROOT, 'public', 'index.html'));
+  sendPage(res, 'index.html');
 });
-// App code must revalidate on every load so browsers pick up auto-deployed updates immediately.
-app.use(express.static(path.join(ROOT, 'public'), { index: false, extensions: ['html'], setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
+app.use('/v/:v', versionedAssets);
+app.get(/^\/[\w-]+(\.html)?$/, htmlPages);
+// Unversioned paths still work (bookmarks, old tabs) but always revalidate.
+app.use(express.static(path.join(ROOT, 'public'), { index: false, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 
 // ---------- config / auth ----------
 app.get('/api/config', (_req, res) => {
@@ -369,6 +375,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   startScheduler();
   startServerWatchers();
   startSessionKeepAlive();
+  startSessionKeepers();
   startClipJanitor();
   startExtensionSweeper();
   // Docker stops/redeploys with SIGTERM. Close the social browsers cleanly first: a killed Chrome loses the

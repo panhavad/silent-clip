@@ -171,7 +171,7 @@ export function appTourSteps({ isAdmin, name } = {}) {
     {
       tab: 'settings', target: '.accounts-root .accounts',
       title: '5. Connect your accounts',
-      text: 'Log in to YouTube, TikTok and Instagram here once. For YouTube we recommend the <b>SlientClip Publisher</b> Chrome extension: it posts from the Chrome you\'re already signed in to. Clipping options are further down this page.',
+      text: 'Log in to YouTube, TikTok and Instagram here once. For YouTube you choose how posts go out: the <b>server browser</b> (kept open on the server so the login stays warm) or the <b>SlientClip Publisher</b> Chrome extension (posts from the Chrome you\'re already signed in to). Clipping options are further down this page.',
     },
     ...(isAdmin ? [{
       tab: 'admin', target: '.admin-root .panel',

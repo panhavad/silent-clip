@@ -8,7 +8,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { db, CLIPS_DIR, userSettings, accessExpired, EXPIRED_MESSAGE } from './db.js';
-import { getAccount, saveAccount, markLoggedOut, logLoginEvent } from './social/index.js';
+import { extensionStatus, youtubeRoute } from './social/index.js';
 import { viaExtension, recordPublished, recordFailure, planUser } from './publisher.js';
 
 export const EXT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'extension');
@@ -66,8 +66,9 @@ router.use('/api/ext', (req, res, next) => {
 });
 
 const accountView = (userId) => {
-  const a = getAccount(userId, 'youtube');
-  return a ? { loggedIn: a.loggedIn, method: a.method, name: a.displayName || a.username } : null;
+  const e = extensionStatus(userId);
+  // What the extension shows: YouTube in this Chrome, and whether SlientClip currently sends YouTube posts here.
+  return { loggedIn: e.loggedIn, name: e.name, route: youtubeRoute(userId) };
 };
 
 router.get('/api/ext/status', (req, res) => {
@@ -75,25 +76,18 @@ router.get('/api/ext/status', (req, res) => {
   res.json({ user: { name: req.extUser.name, email: req.extUser.email }, youtube: accountView(req.extUser.id), pending, dryRun: dryRun() });
 });
 
-/** The extension reports whether YouTube is signed in in this Chrome; a signed-in Chrome takes over YouTube posting. */
+/** The extension reports whether YouTube is signed in in this Chrome (kept on the link, separate from the server login). */
 router.post('/api/ext/hello', (req, res) => {
   const { youtube = {}, version, browser } = req.body || {};
-  db.prepare('UPDATE ext_links SET version = ?, name = COALESCE(?, name), last_seen_at = ? WHERE id = ?')
-    .run(String(version || '').slice(0, 20) || null, browser ? String(browser).slice(0, 80) : null, Date.now(), req.extLink.id);
   const uid = req.extUser.id;
-  const acc = getAccount(uid, 'youtube');
-  if (youtube.loggedIn === true) {
-    const name = String(youtube.name || '').slice(0, 100) || acc?.displayName || 'YouTube (your Chrome)';
-    if (!acc || acc.method !== 'extension' || !acc.loggedIn) {
-      saveAccount(uid, 'youtube', { method: 'extension', displayName: name, username: youtube.handle || null });
-      logLoginEvent(uid, 'youtube', true, 'Connected through the SlientClip Chrome extension');
-      planUser(uid);
-    } else if (youtube.name && youtube.name !== acc.displayName) {
-      db.prepare('UPDATE accounts SET display_name = ? WHERE user_id = ? AND platform = ?').run(name, uid, 'youtube');
-    }
-  } else if (youtube.loggedIn === false && acc?.method === 'extension' && acc.loggedIn) {
-    markLoggedOut(uid, 'youtube', 'YouTube is signed out in the Chrome where the SlientClip extension runs. Sign in on youtube.com there.');
-  }
+  const before = extensionStatus(uid).loggedIn;
+  const yt = youtube.loggedIn === true ? 1 : youtube.loggedIn === false ? 0 : null;
+  db.prepare(`UPDATE ext_links SET version = ?, name = COALESCE(?, name), last_seen_at = ?,
+      yt_logged_in = COALESCE(?, yt_logged_in), yt_name = COALESCE(?, yt_name), yt_checked_at = CASE WHEN ? IS NULL THEN yt_checked_at ELSE ? END WHERE id = ?`)
+    .run(String(version || '').slice(0, 20) || null, browser ? String(browser).slice(0, 80) : null, Date.now(),
+      yt, youtube.name ? String(youtube.name).slice(0, 100) : null, yt, Date.now(), req.extLink.id);
+  // Signing in (or out) in that Chrome can change which posts are ready and how auto-publish plans.
+  if (before !== extensionStatus(uid).loggedIn) planUser(uid);
   res.json({ ok: true, youtube: accountView(uid) });
 });
 
@@ -161,14 +155,14 @@ router.post('/api/ext/jobs/:id/result', (req, res) => {
   if (b.ok) {
     const url = typeof b.url === 'string' && /^https:\/\/(www\.)?(youtube\.com|youtu\.be|studio\.youtube\.com)\//.test(b.url) ? b.url : null;
     recordPublished(p, { url, externalId: String(b.externalId || '').slice(0, 40) || null });
-    if (b.channel) db.prepare('UPDATE accounts SET display_name = ? WHERE user_id = ? AND platform = ?').run(String(b.channel).slice(0, 100), p.user_id, 'youtube');
-    logLoginEvent(p.user_id, 'youtube', true, b.dryRun ? 'Test upload in your Chrome (stopped before publishing)' : 'Posted a clip from your Chrome');
+    if (b.channel) db.prepare('UPDATE ext_links SET yt_name = ? WHERE id = ?').run(String(b.channel).slice(0, 100), req.extLink.id);
+    db.prepare('UPDATE ext_links SET yt_logged_in = 1, yt_checked_at = ? WHERE id = ?').run(Date.now(), req.extLink.id);
     return res.json({ ok: true });
   }
   const pressed = Boolean(b.pressedPost || claim?.pressed);
   let message = String(b.error || 'The upload failed in your Chrome').slice(0, 400);
   if (b.loggedOut) {
-    markLoggedOut(p.user_id, 'youtube', 'YouTube is signed out in the Chrome where the SlientClip extension runs. Sign in on youtube.com there.');
+    db.prepare('UPDATE ext_links SET yt_logged_in = 0, yt_checked_at = ? WHERE id = ?').run(Date.now(), req.extLink.id);
     message = 'YouTube is signed out in your Chrome. Sign in on youtube.com in that Chrome, then press Retry.';
   }
   if (pressed) message += ' — stopped after pressing Publish, so it was not retried. Check YouTube Studio before retrying.';

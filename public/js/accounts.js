@@ -18,14 +18,19 @@ export const accountFor = (accounts, platform) => accounts.accounts.find((a) => 
 
 /** "Post from your own Chrome": the SlientClip extension uploads to YouTube from the user's signed-in Chrome. */
 function extensionBox(a, links) {
-  const seen = links[0]?.lastSeenAt;
-  const online = seen && Date.now() - seen < 3 * 60000;
-  const inUse = a.method === 'extension';
-  return `<div class="ext-box">
-    <div class="row" style="gap:8px">${icon('monitor')}<b>Post from your own Chrome</b><span class="badge ${inUse ? 'done' : ''}">${inUse ? 'In use' : 'Recommended'}</span></div>
-    <div class="small muted">The SlientClip extension uploads Shorts from the Chrome where you're already signed in to YouTube, so the login never expires here.</div>
-    ${links.length ? `<div class="small row" style="gap:8px">Extension <b style="color:${online ? 'var(--ok)' : 'var(--warn)'}">${online ? 'online' : 'offline'}</b> · last seen ${seen ? timeAgo(seen) : 'never'}${links[0].version ? ` · v${esc(links[0].version)}` : ''}
-      <button class="btn sm ghost ext-unlink" data-id="${esc(links[0].id)}">Disconnect</button></div>` : ''}
+  const e = a.ext || {};
+  const online = e.online;
+  const inUse = a.route === 'extension';
+  const yt = !e.connected ? '' : e.loggedIn === true
+    ? `<span style="color:var(--ok)">YouTube signed in${e.name ? ` as <b>${esc(e.name)}</b>` : ''}</span>`
+    : e.loggedIn === false ? '<span style="color:var(--warn)">YouTube is signed out in that Chrome: sign in on youtube.com there</span>'
+      : '<span class="muted">YouTube status not reported yet</span>';
+  return `<div class="route-box ${inUse ? 'active' : ''}" data-route="extension">
+    <div class="row route-head">${icon('monitor')}<b>Chrome extension</b><span class="badge ${inUse ? 'done' : ''}">${inUse ? 'In use' : 'Standby'}</span></div>
+    <div class="small muted">Uploads from the Chrome where you're already signed in to YouTube, so no YouTube login is kept on the server. Chrome must be open.</div>
+    ${links.length ? `<div class="small">${yt}</div>
+      <div class="small row" style="gap:8px;flex-wrap:wrap">Extension <b style="color:${online ? 'var(--ok)' : 'var(--warn)'}">${online ? 'online' : 'offline'}</b> · last seen ${e.lastSeenAt ? timeAgo(e.lastSeenAt) : 'never'}${e.version ? ` · v${esc(e.version)}` : ''}
+      <button class="btn sm ghost ext-unlink" data-id="${esc(links[0].id)}">Disconnect</button></div>` : '<div class="small muted">Not connected yet.</div>'}
     <details class="small"${links.length ? '' : ' open'}><summary>${links.length ? 'Setup steps' : 'Set it up (2 minutes)'}</summary><ol>
       <li><a href="/extension.zip" download>Download the extension</a> and unzip it.</li>
       <li>In Chrome open <code>chrome://extensions</code>, turn on <b>Developer mode</b>, press <b>Load unpacked</b> and pick the unzipped <code>slientclip-extension</code> folder.</li>
@@ -34,6 +39,21 @@ function extensionBox(a, links) {
     </ol>Keep Chrome open: posts are uploaded within a minute of their time, in a background tab.</details>
     <div><a class="btn sm" href="/extension.zip" download>${icon('download')}Download extension</a></div>
   </div>`;
+}
+
+/** Status of the always-open server session (the "virtual" browser) for this account. */
+function keeperLine(a) {
+  const k = a.keeper;
+  if (!k || !a.loggedIn || a.demo) return '';
+  if (k.open) {
+    return `<div class="small keeper-line on">${icon('record')}<span>Always open on the server · refreshed ${timeAgo(k.refreshedAt)}${k.checkedAt ? ` · login checked ${timeAgo(k.checkedAt)}` : ''}</span>
+      <button class="btn sm ghost view-keeper" data-sid="${esc(k.sessionId)}" title="See and use the browser that's kept open">${icon('eye')}View</button></div>`;
+  }
+  if (k.expected) {
+    return `<div class="small keeper-line">${k.error ? `${icon('alert')}<span>Couldn't keep the session open: ${esc(k.error)}${k.retryAt ? ` · retrying ${new Date(k.retryAt).toLocaleTimeString()}` : ''}</span>` : `${icon('loader', 'spin')}<span>Opening the always-open session…</span>`}</div>`;
+  }
+  if (a.platform === 'youtube' && a.route === 'extension') return '<div class="small muted keeper-line">Not kept open while YouTube posts go through your Chrome.</div>';
+  return '';
 }
 
 // The extension's popup tells the page when it has connected, so the panel updates without a reload.
@@ -78,22 +98,48 @@ export async function renderAccounts(root) {
       const m = PLATFORM_META[a.platform];
       const who = a.displayName || a.username;
       const state = a.loggedIn
-        ? `Logged in${who ? ` as <b style="color:var(--text)">${esc(who)}</b>` : ''}${a.username && a.username !== who ? ` · @${esc(a.username)}` : ''}${a.method === 'extension' ? ' · <span style="color:var(--accent-2)">through your Chrome</span>' : ''}${a.checkedAt ? ` · checked ${timeAgo(a.checkedAt)}` : ''}`
+        ? `Logged in${who ? ` as <b style="color:var(--text)">${esc(who)}</b>` : ''}${a.username && a.username !== who ? ` · @${esc(a.username)}` : ''}${a.checkedAt ? ` · checked ${timeAgo(a.checkedAt)}` : ''}`
         : a.known ? `<span style="color:var(--warn)">Session expired. Log in again.</span>${a.loggedOutReason ? `<div class="small muted" title="${esc(a.loggedOutReason)}">Why: ${esc(a.loggedOutReason)}${a.checkedAt ? ` (${timeAgo(a.checkedAt)})` : ''}</div>` : ''}` : 'Not logged in';
-      return `<div class="account ${a.loggedIn ? 'on' : ''}" data-p="${a.platform}">
-        <div class="plat-logo ${m.cls}">${m.icon}</div>
-        <div style="min-width:0;flex:1"><div><b>${m.label}</b></div>
-          <div class="small muted">${state}</div>
-          ${a.history?.length ? `<details class="acct-history small"><summary class="muted">Login history (${a.history.length})</summary><ul>${a.history.map((h) => `<li class="${h.ok === false ? 'bad' : h.ok ? 'good' : ''}"><span class="muted">${timeAgo(h.at)}</span> ${esc(h.text)}</li>`).join('')}</ul></details>` : ''}
-          ${a.session ? `<div class="small" style="color:var(--accent-2)">${icon('loader', 'spin')} ${esc(a.session.kind === 'post' ? a.session.step : 'Browser open')}</div>` : ''}</div>
-        <div class="row acct-actions">
+      const history = a.history?.length ? `<details class="acct-history small"><summary class="muted">Login history (${a.history.length})</summary><ul>${a.history.map((h) => `<li class="${h.ok === false ? 'bad' : h.ok ? 'good' : ''}"><span class="muted">${timeAgo(h.at)}</span> ${esc(h.text)}</li>`).join('')}</ul></details>` : '';
+      const busy = a.session ? `<div class="small" style="color:var(--accent-2)">${icon('loader', 'spin')} ${esc(a.session.kind === 'post' ? a.session.step : 'Browser open')}</div>` : '';
+      const actions = `<div class="row acct-actions">
           ${a.loggedIn
             ? `<button class="btn sm check" title="Check the saved session is still logged in">${icon('refresh')}Check</button>
                <button class="btn sm ghost danger logout-acct" title="Log out and delete the saved session">${icon('logout')}</button>`
             : `<button class="btn sm primary login" ${b.available || data.demo ? '' : 'disabled'}>${icon('login')}Log in</button>`}
           <label class="btn sm ghost import" title="Import cookies exported from your own browser (Cookie-Editor JSON)">${icon('upload')}<input type="file" accept=".json,application/json" hidden></label>
+        </div>`;
+      if (a.platform !== 'youtube') {
+        return `<div class="account ${a.connected ? 'on' : ''}" data-p="${a.platform}">
+          <div class="plat-logo ${m.cls}">${m.icon}</div>
+          <div style="min-width:0;flex:1"><div><b>${m.label}</b></div><div class="small muted">${state}</div>${keeperLine(a)}${history}${busy}</div>
+          ${actions}
+        </div>`;
+      }
+      // YouTube: two ways to connect, and a choice of which one posts.
+      const viaExt = a.route === 'extension';
+      const summary = viaExt
+        ? (a.connected ? `Posting through <b style="color:var(--text)">your Chrome</b>${a.ext?.name ? ` as ${esc(a.ext.name)}` : ''}` : '<span style="color:var(--warn)">Set to post through your Chrome, but the extension isn\'t ready (see below)</span>')
+        : (a.connected ? `Posting through the <b style="color:var(--text)">server browser</b>${who ? ` as ${esc(who)}` : ''}` : 'Not connected: log in with the server browser or connect the Chrome extension');
+      const viaBtn = (v, label, title) => `<button data-v="${v}" class="${a.via === v ? 'active' : ''}" title="${esc(title)}">${label}</button>`;
+      return `<div class="account yt-account ${a.connected ? 'on' : ''}" data-p="youtube">
+        <div class="plat-logo ${m.cls}">${m.icon}</div>
+        <div style="min-width:0;flex:1"><div><b>${m.label}</b></div><div class="small muted">${summary}</div></div>
+        <div class="yt-via-wrap"><span class="small muted">Post via</span>
+          <div class="seg yt-via" role="group" aria-label="How YouTube posts go out">
+            ${viaBtn('auto', 'Auto', 'Use the Chrome extension when it is connected and signed in, otherwise the server browser')}
+            ${viaBtn('extension', `${icon('monitor')}Chrome extension`, 'Always post YouTube from your own Chrome')}
+            ${viaBtn('server', `${icon('server')}Server browser`, 'Always post YouTube from the browser kept open on the server')}
+          </div></div>
+        <div class="yt-routes">
+          <div class="route-box ${viaExt ? '' : 'active'}" data-route="server">
+            <div class="row route-head">${icon('server')}<b>Server browser (virtual)</b><span class="badge ${viaExt ? '' : 'done'}">${viaExt ? 'Standby' : 'In use'}</span><span class="spacer"></span>${actions}</div>
+            <div class="small muted">A real browser on the server, signed in once, kept open around the clock so the login stays warm. Works with your computer off.</div>
+            <div class="small muted">${state}</div>
+            ${keeperLine(a)}${history}${busy}
+          </div>
+          ${extensionBox(a, data.extension || [])}
         </div>
-        ${a.platform === 'youtube' ? extensionBox(a, data.extension || []) : ''}
       </div>`;
     }).join('')}</div>
     <div class="settings-grid" style="margin-top:14px">
@@ -138,10 +184,21 @@ export async function renderAccounts(root) {
       rerender();
     });
     el.querySelector('.ext-unlink')?.addEventListener('click', async (e) => {
-      if (!confirm('Disconnect the SlientClip extension? YouTube posts then wait until you connect it again (or log in with the server browser).')) return;
+      if (!confirm('Disconnect the SlientClip extension? With "Auto", YouTube posts then go through the server browser (if it\'s logged in).')) return;
       await api(`/api/ext/links/${e.currentTarget.dataset.id}`, { method: 'DELETE' });
       toast('Extension disconnected', 'ok');
       rerender();
+    });
+    el.querySelectorAll('.yt-via button').forEach((btn) => btn.addEventListener('click', async () => {
+      try {
+        await api('/api/settings', { method: 'PUT', body: { youtubeVia: btn.dataset.v } });
+        toast({ auto: 'YouTube: posting through the extension when it\'s connected, otherwise the server browser', extension: 'YouTube posts now go through your Chrome extension', server: 'YouTube posts now go through the server browser' }[btn.dataset.v], 'ok');
+      } catch (err) { toast(err.message, 'error'); }
+      cache = null;
+      rerender();
+    }));
+    el.querySelector('.view-keeper')?.addEventListener('click', (e) => {
+      openBrowserViewer({ sessionId: e.currentTarget.dataset.sid, mode: 'session', platform: p, title: `${label} on the server (always open)` });
     });
     el.querySelector('.import input').addEventListener('change', async (e) => {
       const file = e.target.files[0];

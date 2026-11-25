@@ -169,6 +169,28 @@ db.exec(`CREATE TABLE IF NOT EXISTS ext_links (
   created_at INTEGER NOT NULL,
   last_seen_at INTEGER
 )`);
+// What the extension last saw about YouTube in that Chrome (1 signed in / 0 signed out / NULL unknown).
+{
+  const cols = new Set(db.prepare('PRAGMA table_info(ext_links)').all().map((c) => c.name));
+  if (!cols.has('yt_logged_in')) db.exec('ALTER TABLE ext_links ADD COLUMN yt_logged_in INTEGER');
+  if (!cols.has('yt_name')) db.exec('ALTER TABLE ext_links ADD COLUMN yt_name TEXT');
+  if (!cols.has('yt_checked_at')) db.exec('ALTER TABLE ext_links ADD COLUMN yt_checked_at INTEGER');
+}
+// v1.15: the extension no longer takes over the YouTube account row (the server-browser login and the extension
+// are two separate ways to connect). Move what older versions stored there to the extension link.
+for (const r of db.prepare("SELECT user_id, display_name, meta FROM accounts WHERE platform = 'youtube' AND json_valid(meta) AND json_extract(meta, '$.method') = 'extension'").all()) {
+  const meta = JSON.parse(r.meta);
+  db.prepare('UPDATE ext_links SET yt_logged_in = ?, yt_name = COALESCE(yt_name, ?), yt_checked_at = ? WHERE user_id = ?')
+    .run(meta.loggedIn === false ? 0 : 1, r.display_name, meta.checkedAt || Date.now(), r.user_id);
+  db.prepare(`UPDATE users SET settings = json_set(CASE WHEN json_valid(settings) THEN settings ELSE '{}' END, '$.youtubeVia', 'extension') WHERE id = ?`).run(r.user_id);
+  if (fs.existsSync(path.join(DATA_DIR, 'browser', String(r.user_id), 'youtube'))) {
+    // A server login may still be in the profile: keep the row and let the next check confirm it.
+    db.prepare("UPDATE accounts SET meta = ? WHERE user_id = ? AND platform = 'youtube'")
+      .run(JSON.stringify({ ...meta, method: 'browser', loggedIn: true, refreshedAt: 0 }), r.user_id);
+  } else {
+    db.prepare("DELETE FROM accounts WHERE user_id = ? AND platform = 'youtube'").run(r.user_id);
+  }
+}
 // Thumbnails of deleted clips that still appear in the schedule history.
 export const HISTORY_THUMBS_DIR = path.join(DATA_DIR, 'history-thumbs');
 // Accounts used to be OAuth tokens; posting now uses logged-in browser sessions, so old token links are dropped.
@@ -209,12 +231,14 @@ export const DEFAULT_SETTINGS = {
   publishView: 'background',   // background (hidden browser, reports result) | foreground (show the posting browser window)
   youtubeVisibility: 'public', // public | unlisted | private
   tiktokPrivacy: 'everyone',   // everyone | friends | only_me
+  youtubeVia: 'auto',          // how YouTube posts go out: auto (extension when connected) | extension | server
 };
 
 const ENUMS = {
   mode: ['background', 'foreground'], windowLayout: ['per-streamer', 'grid'], layout: ['blur', 'crop'],
   resolution: ['720x1280', '1080x1920', '540x960'], processing: ['browser', 'server'],
   publishView: ['background', 'foreground'], youtubeVisibility: ['public', 'unlisted', 'private'], tiktokPrivacy: ['everyone', 'friends', 'only_me'],
+  youtubeVia: ['auto', 'extension', 'server'],
 };
 
 /** Validate + persist a partial settings object; nested `autopublish` is kept as-is. */

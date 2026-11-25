@@ -536,3 +536,19 @@ body.expired .tabs .tab:not(.active) { opacity: .7; }
 .tour-actions .btn svg { width: 14px; height: 14px; }
 .tour-actions .tour-next svg { order: 2; }
 @media (prefers-reduced-motion: reduce) { .tour-spot, .tour-card { transition: none; } }
+
+/* YouTube: server browser or Chrome extension */
+.yt-account { flex-wrap: wrap; align-items: flex-start; }
+.yt-via-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.yt-via button { display: inline-flex; align-items: center; gap: 6px; }
+.yt-via button svg { width: 14px; height: 14px; }
+.yt-routes { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.route-box { display: grid; gap: 6px; align-content: start; padding: 12px 14px; border-radius: 12px; border: 1px dashed var(--border); background: rgba(255, 255, 255, .015); }
+.route-box.active { border: 1px solid var(--accent-2); background: rgba(16, 201, 143, .05); }
+.route-head { gap: 8px; flex-wrap: wrap; }
+.route-head > svg { width: 16px; height: 16px; }
+.route-box .acct-actions { margin-left: auto; }
+.keeper-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--muted); }
+.keeper-line svg { width: 13px; height: 13px; flex: none; }
+.keeper-line.on { color: var(--ok); }
+.keeper-line .btn { padding: 2px 8px; }

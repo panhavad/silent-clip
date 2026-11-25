@@ -9,7 +9,8 @@ import { renderBackup } from './backup.js';
 import { AdminView } from './admin.js';
 import { ServerManager } from './server-manager.js';
 import { icon, hydrateIcons } from './icons.js';
-import { preloadRenderer } from './engine/render.js';
+import { preloadRenderer, rendering } from './engine/render.js';
+import { transcribing } from './engine/transcribe.js';
 import { thresholds } from './engine/analyzer.js';
 import { renderVersion, watchForUpdates } from './version.js';
 import { skeleton, showLoading } from './loader.js';
@@ -38,7 +39,8 @@ let accessLocked = false; // an administrator's expiry date passed: read-only
 
 $('.me-name').textContent = me.name || me.email;
 renderVersion($('.ver'), config.build);
-watchForUpdates(config.build, $('.update-pill'));
+// Updates itself to a new release, but never while watching or rendering in this browser.
+watchForUpdates(config.build, $('.update-pill'), { busy: () => (running && processing === 'browser') || rendering() || transcribing() });
 if (me.avatar) $('.me-avatar').src = me.avatar; else $('.me-avatar').classList.add('hidden');
 $('.logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }); location.href = '/'; };
 

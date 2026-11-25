@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db, CLIPS_DIR, HISTORY_THUMBS_DIR, userSettings, accessExpired } from './db.js';
 import { pruneHistoryThumb } from './store.js';
-import { DRIVERS, connectedPlatforms, getAccount, publishWithBrowser, saveShot, SHOTS_DIR } from './social/index.js';
+import { DRIVERS, connectedPlatforms, getAccount, publishWithBrowser, saveShot, SHOTS_DIR, youtubeRoute } from './social/index.js';
 import { sleep } from './social/human.js';
 import { slotsForDay, dayKeyOf, toMinutes } from '../public/js/engine/slots.js';
 
@@ -139,7 +139,7 @@ const busyProfiles = new Set();
 
 export const EXT_WAITING = 'Waiting for your Chrome (SlientClip extension)';
 export const EXPIRED_STEP = 'Paused: account access expired';
-export const viaExtension = (userId, platform) => getAccount(userId, platform)?.method === 'extension';
+export const viaExtension = (userId, platform) => platform === 'youtube' && youtubeRoute(userId) === 'extension';
 
 async function publishOne(post) {
   inFlight.add(post.id);

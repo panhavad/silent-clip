@@ -9,7 +9,7 @@ Each user chooses **where watching and clipping run**:
 - **Browser** (default): watching, chat analysis, cutting and 9:16 rendering run in the user's browser (Web Workers + ffmpeg.wasm). The server only stores the results.
 - **Server**: the same pipeline runs inside the server (native ffmpeg + Whisper on Node), so clipping continues after the user closes the web app or turns off their computer.
 
-Finished clips are posted to YouTube / TikTok / Instagram **without API keys**, by driving a real logged-in browser like a person would: the server's own browser, or for YouTube, **your own Chrome through the SlientClip extension**, so the YouTube login never lives (or expires) on the server.
+Finished clips are posted to YouTube / TikTok / Instagram **without API keys**, by driving a real logged-in browser like a person would. YouTube can go out **either way**: through the server's own browser, which is **kept open and active around the clock** per user so the login never idles out, or through **your own Chrome with the SlientClip extension**, so no YouTube login lives on the server at all.
 
 ## Screenshots
 
@@ -19,6 +19,7 @@ Finished clips are posted to YouTube / TikTok / Instagram **without API keys**, 
 | ![Clip library](public/img/screenshots/clips.webp) **Clip library** with one-click posting per platform | ![Selecting clips](public/img/screenshots/clips-select.webp) **Select** clips to delete or mark published |
 | ![Clip details](public/img/screenshots/clip-editor.webp) **Clip details**: viral score, title, description, hashtags, captions | ![Schedule](public/img/screenshots/schedule.webp) **Auto-publish** with random or fixed times, and the calendar |
 | ![Social accounts](public/img/screenshots/social-accounts.webp) **Social accounts**, login history and the Chrome extension | ![Extension popup](public/img/screenshots/extension-popup.webp) **SlientClip Publisher** extension popup |
+| ![YouTube: two ways to post](public/img/screenshots/youtube-routes.webp) **YouTube, two ways**: server browser kept open, or the Chrome extension | |
 | ![Admin console](public/img/screenshots/admin.webp) **Admin**: approvals, storage limits, server watching, who's watching now, database backup | ![Phone layout](public/img/screenshots/mobile-clips.webp) **Phone** layout |
 
 ## Features
@@ -44,7 +45,7 @@ Finished clips are posted to YouTube / TikTok / Instagram **without API keys**, 
 
 **Posting and scheduling**
 - **Social accounts without API keys**: log in once through a live view of the server's browser; posts run in the background with a success/failure report, or in the foreground where you can watch.
-- **YouTube from your own Chrome**: the **SlientClip Publisher** extension uploads from the Chrome you're signed in to, so the login never expires on the server.
+- **YouTube, two ways**: the **server browser (virtual)**, kept open and active per user around the clock so the session never suspends or times out, or the **SlientClip Publisher** extension, which uploads from the Chrome you're signed in to. **Post via** picks one (Auto / Chrome extension / Server browser).
 - **Auto-publish** per platform: **Random times** (N videos a day inside a time window, natural-looking times that change daily, **Shuffle times**) or **Fixed times**, plus posting days and a minimum viral score. The planner fills upcoming slots with your best unposted clips.
 - **Schedule calendar** (week / month): scheduled, published and failed posts, open slots, drag-and-drop rescheduling, post now / retry / unschedule. Posts of deleted clips stay as **history**.
 - Logins are kept alive in the background, YouTube signs itself back in when it can, and each account has a **login history** showing why a login was kept or lost.
@@ -124,6 +125,7 @@ Settings per user: **background** (hidden browser, reports the result) or **fore
 
 Safety rules:
 - Before every post the saved session is checked. If the platform logged it out, the post fails with "log in again" and the account is flagged in Settings.
+- **YouTube stays open on the server.** Once signed in (and while YouTube posts go through the server browser), each user's YouTube browser is **kept open permanently**, not only opened for posts. It keeps Studio loaded, reloads it every 10 minutes (`SOCIAL_KEEP_OPEN_REFRESH_MIN`) and re-checks the login every 3 hours (`SOCIAL_KEEP_OPEN_CHECK_HOURS`). The page always counts as focused and visible, and Chromium's background throttling is off, so the tab is never suspended or frozen. Posts, **Check** and re-logins briefly take the profile over (a running step is finished first) and the session reopens right after. If it closes or crashes it's reopened automatically, backing off up to 30 minutes on repeated failures. Settings shows *Always open on the server* with **View** to watch or use that browser live, for example to answer a Google "confirm it's you" prompt. Each open browser takes roughly 150–300 MB RAM; `SOCIAL_KEEP_OPEN_MAX` (default 20) caps them and `SOCIAL_KEEP_OPEN=false` turns it off.
 - **Logins are kept alive.** Every 6 hours (`SOCIAL_KEEPALIVE_HOURS`, `0` turns it off) each saved login is opened in the background, visits the platform for ~20 s (`SOCIAL_KEEPALIVE_DWELL_SEC`) so the site refreshes its login cookies, and is checked to confirm it's still signed in. **Check** really asks the platform (for YouTube, YouTube's own signed-in flag) instead of only looking at cookies. A login is only marked expired on a clear answer, and Settings shows why.
 - **YouTube signs itself back in.** If YouTube says it's signed out (on keep-alive, Check or while posting) but the Google account in that browser is still signed in, SlientClip runs Google's silent sign-in and carries on, with no new login needed. Each account has a **Login history** in Settings (last 20 events: signed in, kept alive, re-signed in, posted, expired and why).
 - **Clean shutdown keeps cookies.** On `docker compose` stop/redeploy (SIGTERM) the app closes its browsers and waits for Chromium to exit before quitting, so the login cookies Google just rotated are saved. Re-using stale rotated cookies is a common reason Google signs a session out. The compose file gives it `init: true` and a 30 s grace period.
@@ -135,13 +137,23 @@ Safety rules:
 
 If a platform refuses the login in an automated browser (Google sometimes shows "This browser or app may not be secure"), log in on your own browser, export that site's cookies with the *Cookie-Editor* extension (**Export → JSON**), and use the upload button next to the account to import them. Export from a separate browser profile or a private window and close it without signing out: if the same Google login keeps being used in your everyday browser, Google rotates its cookies there and signs the imported copy out.
 
-### YouTube from your own Chrome (SlientClip extension) — recommended
+### YouTube: server browser or your own Chrome
+
+YouTube has both options side by side in **Settings → Social accounts**, and **Post via** chooses which one posts:
+
+- **Auto** (default): the Chrome extension when it's connected and signed in to YouTube, otherwise the server browser.
+- **Chrome extension**: always hand YouTube posts to your Chrome. The server browser isn't kept open in this mode.
+- **Server browser**: always post from the server's always-open browser, even when the extension is connected.
+
+<img src="public/img/screenshots/youtube-routes.webp" alt="YouTube card: Post via switch, server browser kept open (In use) and Chrome extension (Standby)" width="760">
+
+### YouTube from your own Chrome (SlientClip extension)
 
 If YouTube logins on the server keep expiring, let your own Chrome do the uploading instead. The **SlientClip Publisher** extension (`extension/` in this repo, or **Settings → Social accounts → YouTube → Download extension**) uploads Shorts from the Chrome where you're already signed in to YouTube, so no YouTube login is kept on the server at all.
 
 1. Download the extension zip and unzip it. In Chrome open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and pick the `slientclip-extension` folder.
 2. Make sure that Chrome is signed in to YouTube with the channel you want to post to.
-3. Open SlientClip in that Chrome, click the **SlientClip Publisher** toolbar icon and press **Connect this SlientClip tab**. The YouTube account switches to *through your Chrome*.
+3. Open SlientClip in that Chrome, click the **SlientClip Publisher** toolbar icon and press **Connect this SlientClip tab**. With **Post via: Auto**, YouTube posts now go through your Chrome. A server-browser login, if you have one, stays saved as the fallback.
 
 <img src="public/img/screenshots/extension-popup.webp" alt="SlientClip Publisher popup: connected, YouTube signed in, recent posts" width="370">
 
@@ -170,11 +182,18 @@ Clips, logins and the database live in the `data` volume and survive updates. `-
 
 ### Which version is deployed?
 
-The running release is shown as a badge next to the logo (hover it for the commit, build time and server start time), on the sign-in page, and under **Admin → Deployed version**. `GET /healthz` returns the same data as JSON, e.g. `{"version":"1.5.0","commit":"9a36007","builtAt":"…"}`.
+The running release is shown as a badge next to the logo (hover it for the commit, build time and server start time), on the sign-in page, and under **Admin → Deployed version**. `GET /healthz` returns the same data as JSON, e.g. `{"version":"1.5.0","commit":"9a36007","builtAt":"…","assets":"92d1cb245c00"}`.
 
 - The version number comes from `package.json` — bump it for each release (`npm version minor --no-git-tag-version`).
 - The commit and build time are stamped into the image when you pass `GIT_COMMIT` as above. Local `npm run dev` reads the commit from git.
-- When a new build is deployed while someone has the app open, a **New version · Reload** button appears in the top bar.
+
+### Every user gets the new release
+
+Users never need a hard refresh or a cache clear after a deploy:
+
+- **Versioned code URLs.** Pages are never cached and load their scripts and styles from `/v/<fingerprint>/…`, where the fingerprint (`assets` in `/healthz`) is a hash of the app's code. A release changes every code URL, including modules each script imports and its workers, so no browser, proxy or CDN (e.g. a Cloudflare tunnel's browser-cache TTL) can keep serving old code under a new version number. Within a release those files are cached as immutable, so pages still load fast.
+- **Open tabs update themselves.** Each page checks the server every minute and whenever it's shown again. When the server runs newer code, the page reloads itself onto it right away (keeping the current tab). It waits while you're in the middle of something: typing, an open dialog, or watching and rendering clips in this browser. Meanwhile a **New version · Update** button is shown, and the page updates as soon as you're done (or when you click it). Watch windows that watch in the browser update only when you click the button.
+- API responses are sent with `no-store`, so data is always live too.
 
 ## Using it
 
@@ -228,6 +247,9 @@ Set these in `.env` (Docker Compose passes the common ones through; see `.env.ex
 | `MAX_PUBLISH_BROWSERS` | `2` | Server browsers posting at the same time |
 | `BROWSER_PATH` | auto | Chrome / Edge / Chromium used for logins and posting (Docker: Chromium) |
 | `SOCIAL_KEEPALIVE_HOURS` / `SOCIAL_KEEPALIVE_DWELL_SEC` | `6` / `20` | How often saved logins are refreshed (`0` = off) and for how long |
+| `SOCIAL_KEEP_OPEN` / `SOCIAL_KEEP_OPEN_MAX` | `true` / `20` | Keep each user's YouTube server browser open around the clock / at most this many at once |
+| `SOCIAL_KEEP_OPEN_REFRESH_MIN` / `SOCIAL_KEEP_OPEN_CHECK_HOURS` | `10` / `3` | How often the always-open page is reloaded / its login re-checked |
+| `SOCIAL_KEEP_OPEN_PLATFORMS` | `youtube` | Platforms kept open (comma-separated, e.g. `youtube,tiktok`) |
 | `EXT_STALE_MIN` | `15` | An extension upload that stops reporting this long is marked failed |
 | `PUBLISHED_TTL_HOURS` | `24` | Clips marked published are deleted after this long |
 | `DATA_DIR` | `./data` (`/data` in Docker) | Database, clips, browser profiles |

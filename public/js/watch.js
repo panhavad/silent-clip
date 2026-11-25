@@ -2,7 +2,7 @@ import { api, toast } from './api.js';
 import { WatcherManager } from './engine/manager.js';
 import { ServerManager } from './server-manager.js';
 import { mountMonitors } from './monitor.js';
-import { preloadRenderer } from './engine/render.js';
+import { preloadRenderer, rendering } from './engine/render.js';
 import { hydrateIcons } from './icons.js';
 import { renderVersion, watchForUpdates } from './version.js';
 
@@ -10,7 +10,8 @@ hydrateIcons();
 const me = await api('/api/me');
 api('/api/config').then(({ build }) => {
   renderVersion(document.querySelector('.ver'), build);
-  watchForUpdates(build, document.querySelector('.update-pill'));
+  // A window that watches in this browser only updates when the user chooses to; server-mode windows update by themselves.
+  watchForUpdates(build, document.querySelector('.update-pill'), { busy: () => me.settings.processing !== 'server' || rendering() });
 }).catch(() => {});
 const streamers = await api('/api/streamers');
 const logins = (new URLSearchParams(location.search).get('logins') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);

@@ -8,6 +8,13 @@ const CORE = () => ({
 });
 let queue = Promise.resolve();
 let warm = null;
+let active = 0;
+/** True while renders / audio extractions are queued or running (an update reload waits for them). */
+export const rendering = () => active > 0;
+function track(run) {
+  active++;
+  run.then(() => active--, () => active--);
+}
 
 async function createFFmpeg(onLog, onProgress) {
   const { FFmpeg } = await import('/vendor/ffmpeg/index.js');
@@ -172,6 +179,7 @@ function filterGraph({ W, H, layout, withOverlay, subs = [] }) {
 export function renderClip(job) {
   const run = queue.then(() => doRender(job));
   queue = run.catch(() => {});
+  track(run);
   return run;
 }
 
@@ -191,6 +199,7 @@ export function extractAudio({ bytes, ext = 'ts', offsetSec = 0, durationSec = 3
     }
   });
   queue = run.catch(() => {});
+  track(run);
   return run;
 }
 

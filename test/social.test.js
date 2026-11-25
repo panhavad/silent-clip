@@ -207,3 +207,56 @@ test('healSignIn re-signs a lapsed login through the silent sign-in, and reports
   assert.equal(await healSignIn({ signedIn: async () => false }, fakePage(true)), false);
   assert.equal(await healSignIn({ signedIn: async () => null }, fakePage(true)), null);
 });
+
+test('the server browser stays open for a logged-in account, keeps it active, and gives way to posts', { skip, timeout: 180000 }, async () => {
+  const { _runKeepers, keeperFor } = await import('../server/social/keeper.js');
+  process.env.SOCIAL_KEEP_OPEN_PLATFORMS = 'mock';
+  DRIVERS.mock.sessionCookies = { urls: [SITE], names: ['sid'] };
+  mode = 'ok';
+  try {
+    cookie = '';
+    await call('/api/auth/login', { method: 'POST', body: { email: 's@b.co', password: 'password123' } });
+    await call('/api/admin/users', { method: 'POST', body: { email: 'keep@b.co', password: 'password123' } });
+    cookie = '';
+    await call('/api/auth/login', { method: 'POST', body: { email: 'keep@b.co', password: 'password123' } });
+    const me = (await call('/api/me')).data;
+    const imported = await call('/api/accounts/mock/cookies', { method: 'POST', body: { cookies: [{ name: 'sid', value: 'abc', domain: '127.0.0.1', path: '/', expirationDate: Date.now() / 1000 + 3600 }] } });
+    assert.equal(imported.data.loggedIn, true, JSON.stringify(imported.data));
+
+    await _runKeepers();
+    const first = keeperFor(me.id, 'mock');
+    assert.ok(first, 'a logged-in account gets an always-open session');
+    assert.ok(first.checkedAt > 0, 'its login is checked right away');
+    const state = (await call('/api/accounts')).data.accounts.find((a) => a.platform === 'mock').keeper;
+    assert.deepEqual([state.open, state.sessionId], [true, first.session.id]);
+    const page = await first.session.page.evaluate(() => ({ focused: document.hasFocus(), visible: document.visibilityState, url: location.pathname }));
+    assert.deepEqual(page, { focused: true, visible: 'visible', url: '/upload' }, 'the page acts like a tab someone is looking at');
+
+    // "Check" checks inside the open session instead of closing it.
+    assert.equal((await call('/api/accounts/mock/check', { method: 'POST' })).data.loggedIn, true);
+    assert.equal(keeperFor(me.id, 'mock')?.session.id, first.session.id, 'still the same open session');
+    // Closing the live viewer doesn't close it either.
+    await call(`/api/browser/${first.session.id}`, { method: 'DELETE' });
+    assert.equal(first.session.closed, false);
+
+    // A post takes the profile over (the session closes cleanly), then the session is reopened.
+    const form = new FormData();
+    form.append('meta', JSON.stringify({ streamer: 'jynxzi', title: 'Kept open', hashtags: ['#shorts'], viral: { score: 80 } }));
+    form.append('video', new Blob([new Uint8Array(4096)], { type: 'video/mp4' }), 'clip.mp4');
+    const clip = (await call('/api/clips', { method: 'POST', form })).data;
+    const posted = await postAndWait(clip.id);
+    assert.equal(posted.status, 'published', posted.error);
+    assert.equal(first.session.closed, true, 'closed while posting');
+    await _runKeepers();
+    const again = keeperFor(me.id, 'mock');
+    assert.ok(again && again.session.id !== first.session.id, 'reopened after the post');
+    assert.equal((await call('/api/accounts')).data.accounts.find((a) => a.platform === 'mock').loggedIn, true, 'still signed in');
+
+    // Logging out ends it for good.
+    await call('/api/accounts/mock', { method: 'DELETE' });
+    await _runKeepers();
+    assert.equal(keeperFor(me.id, 'mock'), null);
+  } finally {
+    delete process.env.SOCIAL_KEEP_OPEN_PLATFORMS;
+  }
+});

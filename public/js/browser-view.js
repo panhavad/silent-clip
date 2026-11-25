@@ -40,7 +40,9 @@ export function openBrowserViewer({ sessionId, title, mode = 'watch', platform, 
       </div>
       <div class="small muted bview-help">${mode === 'login'
         ? 'This is a real browser running on the server. Log in as you normally would (including 2-step verification), then press <b>I\'m logged in</b>. The session is saved for future posts.'
-        : 'Watching the server browser post your clip. You can close this; posting continues in the background and you will be notified of the result.'}</div>
+        : mode === 'session'
+          ? 'This is the browser SlientClip keeps open on the server so your login stays active. You can use it, for example to answer a Google "confirm it\'s you" prompt. Closing this view leaves it open.'
+          : 'Watching the server browser post your clip. You can close this; posting continues in the background and you will be notified of the result.'}</div>
     </div>`;
   document.body.appendChild(back);
   const $ = (s) => back.querySelector(s);

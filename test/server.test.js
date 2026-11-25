@@ -39,6 +39,29 @@ test('healthz and public config report the deployed version', async () => {
   assert.equal(build.commit, health.commit);
 });
 
+test('pages load their code from a versioned path, so a release can never be served from a cache', async () => {
+  const health = await fetch(`${base}/healthz`);
+  assert.equal(health.headers.get('cache-control'), 'no-store');
+  const { assets } = await health.json();
+  assert.match(assets, /^[0-9a-f]{12}$/);
+  for (const page of ['/', '/login.html', '/login', '/watch.html']) {
+    const res = await fetch(base + page);
+    const html = await res.text();
+    assert.equal(res.headers.get('cache-control'), 'no-store', page);
+    assert.ok(!/["']\/(js|css)\//.test(html), `${page} has no unversioned code links`);
+    assert.ok(html.includes(`/v/${assets}/`), `${page} links the current code`);
+  }
+  const cur = await fetch(`${base}/v/${assets}/js/api.js`);
+  assert.equal(cur.status, 200);
+  assert.match(cur.headers.get('cache-control'), /immutable/);
+  assert.equal(await cur.text(), fs.readFileSync(new URL('../public/js/api.js', import.meta.url), 'utf8'));
+  const old = await fetch(`${base}/v/0123456789ab/js/api.js`);
+  assert.equal(old.status, 200, 'a tab from before the update still gets the code');
+  assert.equal(old.headers.get('cache-control'), 'no-store');
+  assert.equal((await fetch(`${base}/v/${assets}/index.html`)).status, 404);
+  assert.equal((await fetch(`${base}/api/config`)).headers.get('cache-control'), 'no-store');
+});
+
 test('auth, streamers and clip lifecycle with new/downloaded/posted tracking', async () => {
   assert.equal((await call('/api/me')).status, 401);
   assert.equal((await call('/api/auth/register', { method: 'POST', body: { email: 'a@b.co', password: 'short' } })).status, 400);
@@ -249,7 +272,7 @@ test('visitors get the landing page at "/", signed-in users get the app at "/app
   const get = (p, headers = {}) => fetch(base + p, { headers, redirect: 'manual' });
   const visitor = await get('/');
   assert.equal(visitor.status, 200);
-  assert.match(await visitor.text(), /<link rel="stylesheet" href="\/css\/landing\.css">/);
+  assert.match(await visitor.text(), /<link rel="stylesheet" href="\/v\/[0-9a-f]+\/css\/landing\.css">/);
   assert.equal(visitor.headers.get('cache-control'), 'no-store');
   for (const p of ['/app', '/index.html']) {
     const r = await get(p);

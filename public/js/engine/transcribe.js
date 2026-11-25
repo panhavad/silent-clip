@@ -26,6 +26,10 @@ function getWorker() {
   return worker;
 }
 
+/** True while transcriptions are queued or running (an update reload waits for them). */
+let active = 0;
+export const transcribing = () => active > 0;
+
 /** Transcribe 16 kHz mono PCM. Jobs are serialized so the model is loaded only once. */
 export function transcribe(audio, { language, onProgress } = {}) {
   const run = queue.then(() => new Promise((resolve, reject) => {
@@ -34,6 +38,8 @@ export function transcribe(audio, { language, onProgress } = {}) {
     getWorker().postMessage({ id, audio, language }, [audio.buffer]);
   }));
   queue = run.catch(() => {});
+  active++;
+  queue.then(() => active--);
   return run;
 }
 

@@ -9,6 +9,7 @@ import {
 } from './browser.js';
 import { LoggedOutError, pause, sleep } from './human.js';
 import { healSignIn } from './session-check.js';
+import { keeperFor, checkKeeper, keeperState } from './keeper.js';
 import { youtube } from './youtube.js';
 import { tiktok } from './tiktok.js';
 import { instagram } from './instagram.js';
@@ -33,9 +34,35 @@ export function getAccount(userId, platform) {
     loggedIn: meta.loggedIn !== false, checkedAt: meta.checkedAt || r.updated_at, refreshedAt: meta.refreshedAt || null, demo: Boolean(meta.demo), since: r.created_at,
     loggedOutReason: meta.loggedIn === false ? meta.reason || null : null,
     history: Array.isArray(meta.history) ? meta.history : [],
-    // 'browser' = the server's own browser profile; 'extension' = the user's Chrome via the SlientClip extension.
-    method: meta.method === 'extension' ? 'extension' : 'browser',
+    method: 'browser',
   };
+}
+
+// ---------- YouTube: server browser or the user's own Chrome (SlientClip extension) ----------
+/** What the user's most recently seen SlientClip extension knows about YouTube in that Chrome. */
+export function extensionStatus(userId) {
+  const l = db.prepare('SELECT * FROM ext_links WHERE user_id = ? ORDER BY COALESCE(last_seen_at, created_at) DESC LIMIT 1').get(userId);
+  if (!l) return { connected: false, online: false, loggedIn: null, name: null, lastSeenAt: null, version: null };
+  return {
+    connected: true, online: Boolean(l.last_seen_at && Date.now() - l.last_seen_at < 3 * 60000),
+    loggedIn: l.yt_logged_in === null || l.yt_logged_in === undefined ? null : Boolean(l.yt_logged_in),
+    name: l.yt_name || null, lastSeenAt: l.last_seen_at || null, checkedAt: l.yt_checked_at || null, version: l.version || null, linkId: l.id,
+  };
+}
+
+/** Which way YouTube posts go out for this user: 'extension' or 'server'. "Auto" prefers a signed-in extension. */
+export function youtubeRoute(userOrId) {
+  const user = typeof userOrId === 'object' ? userOrId : db.prepare('SELECT * FROM users WHERE id = ?').get(userOrId);
+  if (!user) return 'server';
+  const via = userSettings(user).youtubeVia;
+  if (via === 'extension' || via === 'server') return via;
+  return extensionStatus(user.id).loggedIn ? 'extension' : 'server';
+}
+
+/** Can posts to this platform go out right now (through whichever route the user chose)? */
+export function platformReady(userId, platform) {
+  if (platform === 'youtube' && youtubeRoute(userId) === 'extension') return extensionStatus(userId).loggedIn === true;
+  return Boolean(getAccount(userId, platform)?.loggedIn);
 }
 
 const HISTORY_MAX = 20;
@@ -48,13 +75,13 @@ export function logLoginEvent(userId, platform, ok, text) {
   db.prepare('UPDATE accounts SET meta = ? WHERE user_id = ? AND platform = ?').run(JSON.stringify({ ...meta, history }), userId, platform);
 }
 
-export const connectedPlatforms = (userId) => Object.keys(DRIVERS).filter((p) => getAccount(userId, p)?.loggedIn);
+export const connectedPlatforms = (userId) => Object.keys(DRIVERS).filter((p) => platformReady(userId, p));
 
 export function saveAccount(userId, platform, info = {}) {
   const now = Date.now();
   const prev = json(db.prepare('SELECT meta FROM accounts WHERE user_id = ? AND platform = ?').get(userId, platform)?.meta, {});
   const history = [{ at: now, ok: true, text: 'Signed in' }, ...(Array.isArray(prev.history) ? prev.history : [])].slice(0, HISTORY_MAX);
-  const meta = JSON.stringify({ loggedIn: true, checkedAt: now, refreshedAt: now, method: info.method === 'extension' ? 'extension' : 'browser', demo: Boolean(info.demo), history });
+  const meta = JSON.stringify({ loggedIn: true, checkedAt: now, refreshedAt: now, method: 'browser', demo: Boolean(info.demo), history });
   db.prepare(`INSERT INTO accounts (user_id, platform, username, display_name, avatar, meta, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(user_id, platform) DO UPDATE SET username = COALESCE(excluded.username, username),
@@ -117,42 +144,58 @@ async function confirmLogin(userId, session) {
  * expired; returns true / false, or null when the platform didn't give a clear answer.
  */
 export async function refreshSession(userId, platform, { why = 'Background keep-alive' } = {}) {
-  const d = DRIVERS[platform];
   const s = await openSession({ userId, platform, kind: 'check', headed: false });
   try {
     s.step = 'Keeping the login fresh';
+    return await verifySession(userId, platform, s, { why, dwellMs: KEEPALIVE_DWELL_MS });
+  } finally { await s.close(); }
+}
+
+/**
+ * Ask the platform (in an open session) whether the login is still good, re-sign YouTube in silently if it
+ * can, and record the outcome on the account. Returns true / false, or null when there was no clear answer.
+ */
+export async function verifySession(userId, platform, s, { why, dwellMs = 0, page = s.page } = {}) {
+  const d = DRIVERS[platform];
+  {
     let { loggedIn } = await readSession(s);
     let reason = loggedIn ? '' : `the ${d.label} login cookies are gone from the browser profile`;
     // Google's own account login can outlive YouTube's cookies, so let it re-sign YouTube in first.
     if (d.signedIn && (loggedIn || d.passiveLoginUrl)) {
-      const v = await healSignIn(d, s.page);
-      await sleep(KEEPALIVE_DWELL_MS);
+      const v = await healSignIn(d, page);
+      await sleep(dwellMs);
       if (v === false) { loggedIn = false; reason = `${reason || `${d.label} says this browser is signed out`}${d.passiveLoginUrl ? ', and Google\'s silent re-sign-in didn\'t work either' : ''}`; } else if (v === null) loggedIn = loggedIn ? null : false;
       else loggedIn = true;
-      if (s.page.__healed) logLoginEvent(userId, platform, true, `${why}: ${d.label} had signed out; signed back in automatically`);
+      if (page.__healed) logLoginEvent(userId, platform, true, `${why}: ${d.label} had signed out; signed back in automatically`);
     } else if (loggedIn && d.homeUrl) {
-      await s.page.goto(d.homeUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await s.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-      await sleep(KEEPALIVE_DWELL_MS);
+      await page.goto(d.homeUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+      await sleep(dwellMs);
       // Sign-in redirects can pass through a login URL on their way back; only a page that stays there counts.
-      let onLogin = d.loggedOutUrl?.test(s.page.url());
-      for (let i = 0; onLogin && i < 16; i++) { await sleep(500); onLogin = d.loggedOutUrl.test(s.page.url()); }
-      if (onLogin) { loggedIn = false; reason = `${d.label} sent the browser to its login page (${s.page.url().split('?')[0]})`; } else if (!(await readSession(s)).loggedIn) { loggedIn = false; reason = `the ${d.label} login cookies were removed by the site`; }
+      let onLogin = d.loggedOutUrl?.test(page.url());
+      for (let i = 0; onLogin && i < 16; i++) { await sleep(500); onLogin = d.loggedOutUrl.test(page.url()); }
+      if (onLogin) { loggedIn = false; reason = `${d.label} sent the browser to its login page (${page.url().split('?')[0]})`; } else if (!(await readSession(s)).loggedIn) { loggedIn = false; reason = `the ${d.label} login cookies were removed by the site`; }
     }
+    // The session was closed under us (a post took the profile over): no conclusion can be drawn.
+    if (s.closed) return null;
     if (loggedIn === false) markLoggedOut(userId, platform, reason);
     else if (loggedIn && !getAccount(userId, platform)) await confirmLogin(userId, s);
     else if (loggedIn) touchAccount(userId, platform, { loggedIn: true, checkedAt: Date.now(), refreshedAt: Date.now(), reason: null });
     if (loggedIn === null) logLoginEvent(userId, platform, null, `${why}: ${d.label} gave no clear answer; kept the login as it was`);
-    else if (loggedIn && !s.page.__healed) logLoginEvent(userId, platform, true, `${why}: still signed in`);
+    else if (loggedIn && !page.__healed) logLoginEvent(userId, platform, true, `${why}: still signed in`);
+    page.__healed = false;
     return loggedIn;
-  } finally { await s.close(); }
+  }
 }
 
 /** Check the saved session (the "Check" button): really loads the platform, and refreshes the login. */
 export async function checkLogin(user, platform) {
   if (dryRun() && getAccount(user.id, platform)?.demo) return getAccount(user.id, platform);
-  // Logins in the user's own Chrome are checked by the extension each time it posts, not by the server.
-  if (getAccount(user.id, platform)?.method === 'extension') return getAccount(user.id, platform);
+  // The always-open session is checked in place (closing it would end what keeps the login warm).
+  if (keeperFor(user.id, platform)) {
+    await checkKeeper(user.id, platform, 'Check');
+    return getAccount(user.id, platform) || { platform, loggedIn: false };
+  }
   if (profileBusy(user.id, platform)) return getAccount(user.id, platform);
   await refreshSession(user.id, platform, { why: 'Check' });
   return getAccount(user.id, platform) || { platform, loggedIn: false };
@@ -168,7 +211,7 @@ export async function refreshDueSessions({ force = false } = {}) {
   if (!browserAvailable()) return [];
   const due = db.prepare('SELECT user_id, platform, meta FROM accounts').all().filter((r) => {
     const m = json(r.meta, {});
-    return DRIVERS[r.platform] && m.loggedIn !== false && !m.demo && m.method !== 'extension' && (force || Date.now() - (m.refreshedAt || 0) > KEEPALIVE_HOURS * 3600000);
+    return DRIVERS[r.platform] && m.loggedIn !== false && !m.demo && (force || Date.now() - (m.refreshedAt || 0) > KEEPALIVE_HOURS * 3600000);
   });
   const results = [];
   // One at a time, skipping profiles that are posting or logging in right now.
@@ -273,12 +316,15 @@ router.get('/api/accounts', (req, res) => {
     browser: { available: browserAvailable(), path: browserExecutable() ? path.basename(browserExecutable()) : null, canShowWindow: canShowWindow() },
     accounts: Object.values(DRIVERS).map((d) => {
       const a = getAccount(req.user.id, d.id);
-      const s = live.find((x) => x.platform === d.id);
-      return {
-        platform: d.id, label: d.label, connected: Boolean(a?.loggedIn), loggedIn: Boolean(a?.loggedIn), known: Boolean(a),
+      const s = live.find((x) => x.platform === d.id && x.kind !== 'keeper');
+      const out = {
+        platform: d.id, label: d.label, connected: platformReady(req.user.id, d.id), loggedIn: Boolean(a?.loggedIn), known: Boolean(a),
         username: a?.username || null, displayName: a?.displayName || null, avatar: a?.avatar || null,
-        checkedAt: a?.checkedAt || null, demo: Boolean(a?.demo), loggedOutReason: a?.loggedOutReason || null, history: a?.history || [], method: a?.method || null, session: s ? { id: s.id, kind: s.kind, step: s.step } : null,
+        checkedAt: a?.checkedAt || null, demo: Boolean(a?.demo), loggedOutReason: a?.loggedOutReason || null, history: a?.history || [], session: s ? { id: s.id, kind: s.kind, step: s.step } : null,
+        keeper: keeperState(req.user.id, d.id),
       };
+      if (d.id === 'youtube') Object.assign(out, { route: youtubeRoute(req.user), via: userSettings(req.user).youtubeVia, ext: extensionStatus(req.user.id) });
+      return out;
     }),
   });
 });
@@ -379,6 +425,7 @@ router.delete('/api/browser/:id', async (req, res) => {
   const s = ownSession(req);
   if (!s) return res.json({ ok: true });
   if (s.kind === 'post') return res.status(409).json({ error: 'A post is in progress; it closes by itself when done' });
+  if (s.kind === 'keeper') return res.json({ ok: true }); // the always-open session stays open
   await s.close();
   res.json({ ok: true });
 });
