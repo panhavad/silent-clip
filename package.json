@@ -1,6 +1,6 @@
 {
   "name": "slientclip",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "description": "Client-side Twitch viral moment clipper for Shorts/TikTok/Reels",
   "main": "server/index.js",
   "scripts": {

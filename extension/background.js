@@ -39,7 +39,7 @@ async function log(text, ok = null) {
 /** Is YouTube signed in in this Chrome? Read from YouTube's own page data (the same flag the site uses). */
 async function youtubeStatus() {
   try {
-    const t = await (await fetch('https://www.youtube.com/?hl=en', { credentials: 'include' })).text();
+    const t = await (await fetch('https://www.youtube.com/?hl=en', { credentials: 'include', signal: AbortSignal.timeout(15000) })).text();
     const m = /"LOGGED_IN":(true|false)/.exec(t);
     const raw = /"USER_ACCOUNT_NAME":"((?:[^"\\]|\\.)*)"/.exec(t)?.[1];
     let name = null;
@@ -48,6 +48,37 @@ async function youtubeStatus() {
   } catch {
     return { loggedIn: null, name: null };
   }
+}
+
+/** This Chrome's YouTube + Google login cookies, in Cookie-Editor's JSON format (what SlientClip imports). */
+async function exportCookies() {
+  const seen = new Set();
+  const cookies = [];
+  for (const domain of ['youtube.com', 'google.com']) {
+    for (const c of await chrome.cookies.getAll({ domain })) {
+      const key = `${c.domain}|${c.path}|${c.name}|${c.storeId}`;
+      if (seen.has(key) || c.partitionKey) continue;
+      seen.add(key);
+      cookies.push({
+        domain: c.domain, expirationDate: c.expirationDate, hostOnly: c.hostOnly, httpOnly: c.httpOnly, name: c.name,
+        path: c.path, sameSite: c.sameSite, secure: c.secure, session: c.session, storeId: c.storeId, value: c.value,
+      });
+    }
+  }
+  const youtube = await youtubeStatus();
+  if (!cookies.some((c) => /(^|\.)(youtube|google)\.com$/.test(c.domain) && (c.name === 'SID' || c.name === '__Secure-3PSID'))) {
+    return { error: `This Chrome isn't signed in to YouTube${youtube.loggedIn === false ? '' : ' (no Google login cookies found)'}. Sign in on youtube.com, then try again.` };
+  }
+  await log(`Copied the YouTube login${youtube.name ? ` (${youtube.name})` : ''} for the server browser.`, true);
+  return { cookies, name: youtube.name, loggedIn: youtube.loggedIn };
+}
+
+/** Let the paired SlientClip site talk to this extension (only that site, and only with its host permission). */
+async function registerBridge(server) {
+  await chrome.scripting.unregisterContentScripts({ ids: ['bridge'] }).catch(() => {});
+  if (!server || !(await chrome.permissions.contains({ origins: [`${server}/*`] }))) return false;
+  await chrome.scripting.registerContentScripts([{ id: 'bridge', js: ['bridge.js'], matches: [`${server}/*`], runAt: 'document_idle' }]);
+  return true;
 }
 
 async function hello(force = false) {
@@ -201,8 +232,15 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
         await poll();
         reply(await get(['status', 'lastError', 'youtube', 'account']));
         return;
+      case 'exportCookies':
+        reply(await exportCookies());
+        return;
+      case 'registerBridge':
+        reply({ ok: await registerBridge((await get('server')).server) });
+        return;
       case 'disconnect':
         await api('/api/ext/link', { method: 'DELETE' }).catch(() => {});
+        await chrome.scripting.unregisterContentScripts({ ids: ['bridge'] }).catch(() => {});
         await chrome.storage.local.clear();
         reply({ ok: true });
         return;
@@ -217,6 +255,8 @@ function ensureAlarm() {
   chrome.alarms.get('poll').then((a) => { if (!a) chrome.alarms.create('poll', { periodInMinutes: POLL_MINUTES, delayInMinutes: 0.1 }); });
 }
 chrome.runtime.onInstalled.addListener(ensureAlarm);
+// After an update, re-enable the page bridge for an already paired site (if this Chrome allowed that site).
+chrome.runtime.onInstalled.addListener(async () => registerBridge((await get('server')).server).catch(() => {}));
 chrome.runtime.onStartup.addListener(ensureAlarm);
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'poll') poll(); });
 ensureAlarm();

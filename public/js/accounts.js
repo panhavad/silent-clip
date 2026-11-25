@@ -63,6 +63,58 @@ window.addEventListener('slientclip-extension-connected', () => {
   if (accountsRoot?.isConnected) renderAccounts(accountsRoot).catch(() => {});
 });
 
+/** Ask the SlientClip extension in this Chrome (its page bridge, bridge.js); null if it doesn't answer. */
+function askExtension(type, timeout) {
+  return new Promise((resolve) => {
+    const id = Math.random().toString(36).slice(2);
+    const done = (v) => { removeEventListener('message', on); clearTimeout(timer); resolve(v); };
+    const on = (e) => { if (e.source === window && e.data?.slientclip === 'reply' && e.data.id === id) done(e.data); };
+    addEventListener('message', on);
+    const timer = setTimeout(() => done(null), timeout);
+    window.postMessage({ slientclip: 'request', id, type }, location.origin);
+  });
+}
+
+function saveJson(data, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+const NEEDS_EXTENSION = `<b>"From my Chrome" needs the SlientClip Publisher extension (v1.1 or newer) in this Chrome, connected to this site.</b>
+  <ol><li><a href="/extension.zip" download>Download the extension</a> and unzip it (to update, unzip over the old folder and press the reload icon on it in <code>chrome://extensions</code>; a first install: <b>Developer mode</b> → <b>Load unpacked</b>).</li>
+  <li>Click the <b>SlientClip Publisher</b> icon in Chrome's toolbar and press <b>Connect this SlientClip tab</b> (or <b>Reconnect</b>), and allow access to this site when Chrome asks.</li>
+  <li>Press <b>From my Chrome</b> again.</li></ol>`;
+
+/** Download this Chrome's YouTube login through the extension, then offer to sign the server browser in with it. */
+async function copyLoginFromChrome(btn, box, done) {
+  box.querySelector('.cookie-help')?.remove();
+  btn.disabled = true;
+  try {
+    if (!(await askExtension('ping', 1500))) {
+      box.insertAdjacentHTML('beforeend', `<div class="notice small cookie-help">${NEEDS_EXTENSION}</div>`);
+      return;
+    }
+    toast('Allow the copy in the SlientClip extension dialog', '');
+    const r = await askExtension('youtube-cookies', 5 * 60000);
+    if (!r?.ok) { toast(r?.error || 'The extension did not answer', r?.declined ? '' : 'error'); return; }
+    saveJson(r.cookies, `youtube-cookies-${new Date().toLocaleDateString('sv')}.json`);
+    if (!confirm(`Downloaded this Chrome's YouTube login${r.name ? ` (${r.name})` : ''}: ${r.cookies.length} cookies.\n\nSign the server browser in with it now?`)) {
+      toast('Saved the cookie file. Import it any time with the upload button.', 'ok');
+      return;
+    }
+    const out = await api('/api/accounts/youtube/cookies', { method: 'POST', body: { cookies: r.cookies } });
+    toast(`YouTube: server browser signed in${out.displayName || out.username ? ` as ${out.displayName || out.username}` : ''} from this Chrome's login`, 'ok');
+    done();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally { btn.disabled = false; }
+}
+
 /** Open the server browser on the platform's login page; calls onDone after "I'm logged in" (or a demo login). */
 export async function loginTo(platform, onDone) {
   const r = await api(`/api/accounts/${platform}/login`, { method: 'POST' });
@@ -108,6 +160,7 @@ export async function renderAccounts(root) {
                <button class="btn sm ghost danger logout-acct" title="Log out and delete the saved session">${icon('logout')}</button>`
             : `<button class="btn sm primary login" ${b.available || data.demo ? '' : 'disabled'}>${icon('login')}Log in</button>`}
           <label class="btn sm ghost import" title="Import cookies exported from your own browser (Cookie-Editor JSON)">${icon('upload')}<input type="file" accept=".json,application/json" hidden></label>
+          ${a.platform === 'youtube' ? `<button class="btn sm ghost chrome-cookies" title="Download the YouTube login (cookies) of this Chrome through the SlientClip extension, then import it here">${icon('download')}From my Chrome</button>` : ''}
         </div>`;
       if (a.platform !== 'youtube') {
         return `<div class="account ${a.connected ? 'on' : ''}" data-p="${a.platform}">
@@ -154,7 +207,7 @@ export async function renderAccounts(root) {
       <label class="field">TikTok: who can watch
         <select name="tiktokPrivacy"><option value="everyone">Everyone</option><option value="friends">Friends</option><option value="only_me">Only me</option></select></label>
     </div>
-    <div class="small muted" style="margin-top:10px">If a platform blocks the login (Google sometimes says "This browser may not be secure"), log in on your own browser, export that site's cookies with the Cookie-Editor extension (Export → JSON), and import the file with the ${icon('upload')} button.
+    <div class="small muted" style="margin-top:10px">If a platform blocks the login (Google sometimes says "This browser may not be secure"), log in on your own browser, export that site's cookies with the Cookie-Editor extension (Export → JSON), and import the file with the ${icon('upload')} button. For YouTube, <b>From my Chrome</b> does the export for you through the SlientClip extension.
       To keep an imported login signed in, export it from a <b>separate browser profile or a private window</b> and then close that window without signing out. If you keep using the same login in your everyday browser, Google can sign the copy out.</div>`;
 
   for (const k of ['publishView', 'youtubeVisibility', 'tiktokPrivacy']) {
@@ -200,6 +253,7 @@ export async function renderAccounts(root) {
     el.querySelector('.view-keeper')?.addEventListener('click', (e) => {
       openBrowserViewer({ sessionId: e.currentTarget.dataset.sid, mode: 'session', platform: p, title: `${label} on the server (always open)` });
     });
+    el.querySelector('.chrome-cookies')?.addEventListener('click', (e) => copyLoginFromChrome(e.currentTarget, e.currentTarget.closest('.route-box') || el, rerender));
     el.querySelector('.import input').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;

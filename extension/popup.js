@@ -51,19 +51,24 @@ async function connect() {
   say('');
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !/^https?:/.test(tab.url || '')) return say('Open your SlientClip site in this tab first.');
+  const origin = new URL(tab.url).origin;
+  // Lasting access to this one site lets its page use "Copy login from my Chrome"; pairing also works without it.
+  const siteAccess = await chrome.permissions.request({ origins: [`${origin}/*`] }).catch(() => false);
   let res;
   const pair = async () => (await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: pairInPage, args: ['Chrome'] }))[0].result;
   try {
     res = await pair();
   } catch (e) {
+    if (siteAccess) return say(`Could not reach this tab: ${e.message}`);
     // No access to the tab (e.g. the popup wasn't opened from the toolbar): ask for this site, then try again.
-    const origin = new URL(tab.url).origin;
     const granted = await chrome.permissions.request({ origins: [`${origin}/*`] }).catch(() => false);
     if (!granted) return say(`Could not reach this tab: ${e.message}`);
     try { res = await pair(); } catch (e2) { return say(`Could not reach this tab: ${e2.message}`); }
   }
   if (!res || res.error) return say(res?.error || 'Pairing failed');
   await chrome.storage.local.set({ server: res.server, token: res.token, user: res.user, status: 'ok', lastError: null, log: [] });
+  await chrome.runtime.sendMessage({ type: 'registerBridge' }).catch(() => {});
+  chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['bridge.js'] }).catch(() => {});
   say('Connected. Checking YouTube in this Chrome…', true);
   const hello = await chrome.runtime.sendMessage({ type: 'paired' });
   await render();

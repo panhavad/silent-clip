@@ -137,6 +137,8 @@ Safety rules:
 
 If a platform refuses the login in an automated browser (Google sometimes shows "This browser or app may not be secure"), log in on your own browser, export that site's cookies with the *Cookie-Editor* extension (**Export → JSON**), and use the upload button next to the account to import them. Export from a separate browser profile or a private window and close it without signing out: if the same Google login keeps being used in your everyday browser, Google rotates its cookies there and signs the imported copy out.
 
+**YouTube: From my Chrome.** With the SlientClip Publisher extension (v1.1+) connected, the **From my Chrome** button on the YouTube server-browser box does that export for you: it downloads this Chrome's YouTube/Google login as `youtube-cookies-<date>.json` (Cookie-Editor format, HttpOnly cookies included), then offers to sign the server browser in with it right away. The extension only answers your own paired SlientClip site, asks you to allow every copy in its own dialog, and returns only `youtube.com` / `google.com` cookies. Without the extension (or with an older one) the button explains how to install or update it and reconnect.
+
 ### YouTube: server browser or your own Chrome
 
 YouTube has both options side by side in **Settings → Social accounts**, and **Post via** chooses which one posts:

@@ -158,6 +158,33 @@ test('the Chrome extension pairs from the popup and posts a clip through YouTube
     assert.match(got.report.description, /Huge play[\s\S]*#gaming[\s\S]*#Shorts/);
     assert.deepEqual([got.report.notKids, got.report.visibility, got.report.nexts], ['true', 'PUBLIC', 3]);
     assert.ok(log.log.some((l) => l.ok === true && /Posted/.test(l.text)), 'the popup shows the post in Recent activity');
+
+    // "From my Chrome": the SlientClip page asks the extension (only after the user's OK) for this Chrome's YouTube login.
+    await sw.evaluate(() => chrome.cookies.set({ url: 'https://www.youtube.com/', domain: '.youtube.com', name: 'SID', value: 'sid-from-chrome', secure: true, expirationDate: Date.now() / 1000 + 86400 }));
+    await sw.evaluate(() => chrome.cookies.set({ url: 'https://accounts.google.com/', name: 'LSID', value: 'lsid', secure: true, httpOnly: true, expirationDate: Date.now() / 1000 + 86400 }));
+    assert.equal(await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'registerBridge' }).then((r) => r.ok)), true, 'bridge registered for the paired site');
+    await page.goto(base + '/healthz');
+    const ask = (type) => page.evaluate((type) => new Promise((resolve) => {
+      const id = Math.random().toString(36).slice(2);
+      addEventListener('message', (e) => { if (e.data?.slientclip === 'reply' && e.data.id === id) resolve(e.data); });
+      postMessage({ slientclip: 'request', id, type }, location.origin);
+      setTimeout(() => resolve(null), 30000);
+    }), type);
+    assert.equal((await ask('ping')).ok, true, 'the page can see the extension');
+    const dialogs = [];
+    let answer = false;
+    page.on('dialog', (d) => { dialogs.push(d.message()); return answer ? d.accept() : d.dismiss(); });
+    const declined = await ask('youtube-cookies');
+    assert.deepEqual([declined.ok, declined.declined], [false, true], 'nothing is handed over without the OK');
+    answer = true;
+    const copied = await ask('youtube-cookies');
+    assert.equal(copied.ok, true, copied.error);
+    assert.match(dialogs[0], /copy your YouTube login/);
+    assert.equal(dialogs.length, 2);
+    const sid = copied.cookies.find((c) => c.name === 'SID');
+    assert.deepEqual([sid.domain, sid.value, sid.secure], ['.youtube.com', 'sid-from-chrome', true]);
+    assert.ok(copied.cookies.some((c) => c.name === 'LSID' && c.domain === 'accounts.google.com' && c.httpOnly), 'HttpOnly Google cookies are included');
+    assert.ok(copied.cookies.every((c) => /(youtube|google)\.com$/.test(c.domain)), 'only YouTube / Google cookies');
   } finally {
     await ctx.close();
     server.close();
