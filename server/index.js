@@ -3,7 +3,7 @@ import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, DATA_DIR, CLIPS_DIR, userSettings, applySettings, newAccountState, serverWatchAllowed } from './db.js';
+import { db, DATA_DIR, CLIPS_DIR, userSettings, applySettings, newAccountState, serverWatchAllowed, accessExpired, adminContact, EXPIRED_MESSAGE } from './db.js';
 import {
   loadUser, requireUser, destroySession, hashPassword, verifyPassword, signIn,
   googleConfigured, googleStart, googleCallback,
@@ -40,10 +40,18 @@ app.use('/vendor/ffmpeg-util', express.static(nm('@ffmpeg/util/dist/esm'), vendo
 app.use('/vendor/ffmpeg-core', express.static(nm('@ffmpeg/core/dist/esm'), vendorOpts));
 app.use('/vendor/transformers', express.static(nm('@huggingface/transformers/dist'), vendorOpts));
 app.use('/vendor/ort', express.static(nm('onnxruntime-web/dist'), vendorOpts));
-// Signed-out visitors get the product page at "/"; once signed in, the same address opens the app.
-app.get('/', (req, res, next) => (req.user ? next() : res.sendFile(path.join(ROOT, 'public', 'landing.html'), { headers: { 'Cache-Control': 'no-cache' } })));
+// "/" is the product page and "/app" is the app; each address always returns the same page, so a cached
+// landing page can never stand in for the app (or the other way round).
+const noStore = { 'Cache-Control': 'no-store', Vary: 'Cookie' };
+app.get('/', (req, res) => (req.user ? res.redirect(302, '/app')
+  : res.set(noStore).sendFile(path.join(ROOT, 'public', 'landing.html'))));
+app.get(['/app', '/app/', '/index.html'], (req, res) => {
+  if (!req.user) return res.redirect(302, '/');
+  if (req.path !== '/app') return res.redirect(302, '/app');
+  res.set(noStore).sendFile(path.join(ROOT, 'public', 'index.html'));
+});
 // App code must revalidate on every load so browsers pick up auto-deployed updates immediately.
-app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
+app.use(express.static(path.join(ROOT, 'public'), { index: false, extensions: ['html'], setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 
 // ---------- config / auth ----------
 app.get('/api/config', (_req, res) => {
@@ -90,6 +98,16 @@ app.post('/api/auth/logout', (req, res) => { destroySession(req, res); res.json(
 // The Chrome extension authenticates with its own token, so its API sits before the session check.
 app.use(extensionRouter);
 app.use('/api', requireUser);
+// Expired access: the user can still sign in and look around, but nothing can be changed, downloaded or run.
+const EXPIRED_GET_BLOCKED = [/^\/clips\/[^/]+\/(download|source)$/, /^\/backup$/];
+const EXPIRED_ALLOWED = [['POST', /^\/watch\/heartbeat$/], ['DELETE', /^\/browser\/[^/]+$/]];
+app.use('/api', (req, res, next) => {
+  if (!accessExpired(req.user)) return next();
+  const allowed = req.method === 'GET' ? !EXPIRED_GET_BLOCKED.some((re) => re.test(req.path))
+    : EXPIRED_ALLOWED.some(([m, re]) => m === req.method && re.test(req.path));
+  if (allowed) return next();
+  res.status(403).json({ error: EXPIRED_MESSAGE, code: 'expired', contact: adminContact() });
+});
 // Social accounts (logged-in browser sessions + live viewer), publishing queue and auto-publish schedule.
 app.use(socialRouter);
 app.use(publisher);
@@ -99,7 +117,10 @@ app.use(serverWatchRouter);
 
 app.get('/api/me', (req, res) => {
   const u = req.user;
-  res.json({ id: u.id, email: u.email, name: u.name, avatar: u.avatar, google: Boolean(u.google_id), role: u.role, serverWatch: serverWatchAllowed(u), settings: userSettings(u) });
+  res.json({
+    id: u.id, email: u.email, name: u.name, avatar: u.avatar, google: Boolean(u.google_id), role: u.role, serverWatch: serverWatchAllowed(u), settings: userSettings(u),
+    expiresAt: u.role === 'admin' ? null : u.expires_at || null, expired: accessExpired(u), contact: accessExpired(u) ? adminContact() : null,
+  });
 });
 
 app.put('/api/settings', (req, res) => {

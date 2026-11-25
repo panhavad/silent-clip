@@ -14,6 +14,7 @@ import { thresholds } from './engine/analyzer.js';
 import { renderVersion, watchForUpdates } from './version.js';
 import { skeleton, showLoading } from './loader.js';
 import { mountStreamerSearch } from './streamer-search.js';
+import { lockApp, warnExpiry } from './expired.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -32,12 +33,13 @@ const windowStatus = new Map();
 const RUN_KEY = `sc-running-${me.id}`;
 let awaitWindowsUntil = 0; // after a reload in foreground mode: waiting for an open watch window to report
 let foregroundSince = 0;
+let accessLocked = false; // an administrator's expiry date passed: read-only
 
 $('.me-name').textContent = me.name || me.email;
 renderVersion($('.ver'), config.build);
 watchForUpdates(config.build, $('.update-pill'));
 if (me.avatar) $('.me-avatar').src = me.avatar; else $('.me-avatar').classList.add('hidden');
-$('.logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }); location.href = '/login.html'; };
+$('.logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }); location.href = '/'; };
 
 // ---------- tabs ----------
 const TABS = ['live', 'streamers', 'clips', 'schedule', 'settings', ...(me.role === 'admin' ? ['admin'] : [])];
@@ -196,6 +198,7 @@ function setProcessingUi() {
 }
 
 async function start() {
+  if (accessLocked) return;
   awaitWindowsUntil = 0;
   if (!enabled().length) { toast('Add at least one streamer first', 'error'); showTab('streamers'); return; }
   if (processing === 'server') {
@@ -355,11 +358,29 @@ function handleAdminCommand(c) {
 
 async function heartbeat() {
   try {
-    const { commands } = await api('/api/watch/heartbeat', { method: 'POST', body: { running, processing, mode, streamers: watchSnapshot() } });
-    (commands || []).forEach(handleAdminCommand);
+    const r = await api('/api/watch/heartbeat', { method: 'POST', body: { running, processing, mode, streamers: watchSnapshot() } });
+    if (r.expired && !accessLocked) lockAccess(r);
+    if (!r.expired && accessLocked) { location.reload(); return; }
+    (r.commands || []).forEach(handleAdminCommand);
   } catch { /* offline / restarting */ }
 }
 setInterval(heartbeat, 10000);
+
+// ---------- expired access ----------
+/** Access ended: stop watching here and lock the app read-only (the server refuses changes anyway). */
+function lockAccess({ expiresAt = me.expiresAt, contact = me.contact } = {}) {
+  if (accessLocked) return;
+  accessLocked = true;
+  awaitWindowsUntil = 0;
+  localStorage.removeItem(RUN_KEY);
+  if (processing !== 'server' && running) {
+    browserManager.stop();
+    if (mode === 'foreground') channel.postMessage({ type: 'close-all' });
+  }
+  running = false;
+  lockApp({ expiresAt, contact: contact || me.contact });
+}
+window.addEventListener('sc-expired', (e) => lockAccess({ contact: e.detail?.contact }));
 
 /** Add a channel (link, handle or login). `known` = channel info the caller already has from Twitch. */
 async function addStreamer(raw, known) {
@@ -459,8 +480,12 @@ serverManager.addEventListener('revoked', () => {
 $('.monitors').innerHTML = '';
 $('.monitors').removeAttribute('aria-busy');
 setProcessingUi();
+if (me.expired) lockAccess();
+else if (me.expiresAt) warnExpiry(me.expiresAt);
 refreshAutomation();
-if (processing === 'server') {
+if (accessLocked) {
+  // Nothing runs for an expired account.
+} else if (processing === 'server') {
   if (settings.serverRunning) {
     running = true;
     showLoading($('.monitors'), skeleton.monitors(Math.max(1, Math.min(enabled().length, 4))));

@@ -4,7 +4,7 @@ import express from 'express';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, CLIPS_DIR, HISTORY_THUMBS_DIR, userSettings } from './db.js';
+import { db, CLIPS_DIR, HISTORY_THUMBS_DIR, userSettings, accessExpired } from './db.js';
 import { pruneHistoryThumb } from './store.js';
 import { DRIVERS, connectedPlatforms, getAccount, publishWithBrowser, saveShot, SHOTS_DIR } from './social/index.js';
 import { sleep } from './social/human.js';
@@ -138,6 +138,7 @@ const inFlight = new Set();
 const busyProfiles = new Set();
 
 export const EXT_WAITING = 'Waiting for your Chrome (SlientClip extension)';
+export const EXPIRED_STEP = 'Paused: account access expired';
 export const viaExtension = (userId, platform) => getAccount(userId, platform)?.method === 'extension';
 
 async function publishOne(post) {
@@ -206,6 +207,11 @@ export async function runDuePosts({ wait = false } = {}) {
     const claimed = new Set(busyProfiles);
     for (const p of due) {
       if (inFlight.size + jobs.length >= MAX_BROWSERS) break;
+      // Expired accounts' posts wait (nothing is posted) until an admin renews the access.
+      if (accessExpired(db.prepare('SELECT role, expires_at FROM users WHERE id = ?').get(p.user_id))) {
+        db.prepare('UPDATE posts SET step = ? WHERE id = ? AND step IS NOT ?').run(EXPIRED_STEP, p.id, EXPIRED_STEP);
+        continue;
+      }
       // Posts for an account connected through the Chrome extension are picked up by the user's own browser.
       if (viaExtension(p.user_id, p.platform)) {
         db.prepare('UPDATE posts SET step = ? WHERE id = ? AND step IS NOT ?').run(EXT_WAITING, p.id, EXT_WAITING);
@@ -227,7 +233,7 @@ export async function runDuePosts({ wait = false } = {}) {
 /** Fill the user's upcoming posting slots (next 7 days) with their best unposted clips. */
 export function planUser(userId, now = Date.now()) {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  if (!user) return 0;
+  if (!user || accessExpired(user, now)) return 0;
   const ap = autopublishSettings(user);
   if (!ap.enabled) {
     db.prepare("DELETE FROM posts WHERE user_id = ? AND source = 'auto' AND status = 'scheduled' AND scheduled_at > ?").run(userId, now);

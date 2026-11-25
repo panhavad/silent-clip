@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { db, CLIPS_DIR, userSettings } from './db.js';
+import { db, CLIPS_DIR, userSettings, accessExpired, EXPIRED_MESSAGE } from './db.js';
 import { getAccount, saveAccount, markLoggedOut, logLoginEvent } from './social/index.js';
 import { viaExtension, recordPublished, recordFailure, planUser } from './publisher.js';
 
@@ -113,12 +113,14 @@ function jobView(p) {
 
 router.get('/api/ext/jobs', (req, res) => {
   const uid = req.extUser.id;
+  if (accessExpired(req.extUser)) return res.json({ jobs: [], expired: true });
   const due = db.prepare("SELECT * FROM posts WHERE user_id = ? AND status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at LIMIT 20").all(uid, Date.now())
     .filter((p) => PLATFORMS.includes(p.platform) && viaExtension(uid, p.platform));
   res.json({ jobs: due.map(jobView).filter(Boolean) });
 });
 
 router.post('/api/ext/jobs/:id/claim', (req, res) => {
+  if (accessExpired(req.extUser)) return res.status(403).json({ error: EXPIRED_MESSAGE, code: 'expired' });
   const p = ownPost(req);
   if (!p || !PLATFORMS.includes(p.platform)) return res.status(404).json({ error: 'Not found' });
   if (!db.prepare('SELECT 1 FROM clips WHERE id = ?').get(p.clip_id)) {

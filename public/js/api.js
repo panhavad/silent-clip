@@ -4,10 +4,13 @@ export async function api(path, { method = 'GET', body, form } = {}) {
   else if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers['Content-Type'] = 'application/json'; }
   const res = await fetch(path, opts);
   if (res.status === 401 && !path.startsWith('/api/auth')) {
-    location.href = `/login.html?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
+    // Signed out (or the session ended): back to the product page, where Sign in / Start free live.
+    location.href = '/';
     throw new Error('Not signed in');
   }
   const data = await res.json().catch(() => ({}));
+  // Access ran out while the app was open: lock it (handled in app.js).
+  if (res.status === 403 && data.code === 'expired') window.dispatchEvent(new CustomEvent('sc-expired', { detail: data }));
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }

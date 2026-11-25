@@ -31,6 +31,8 @@
   </div>
   <script type="module">
     const $ = (s) => document.querySelector(s);
+    // Already signed in: go straight to the app.
+    if ((await fetch('/api/me', { credentials: 'same-origin' })).ok) location.replace('/app');
     const cfg = await (await fetch('/api/config')).json();
     if (cfg.googleLogin) { $('.google-btn').classList.remove('hidden'); $('.google-divider').classList.remove('hidden'); }
     if (!cfg.allowRegistration) $('.switch').parentElement.classList.add('hidden');
@@ -64,9 +66,9 @@
         body: JSON.stringify({ name: f.elements.name.value, email: f.elements.email.value, password: f.elements.password.value }),
       });
       const data = await res.json().catch(() => ({}));
-      const next = new URLSearchParams(location.search).get('next') || '/';
+      const next = new URLSearchParams(location.search).get('next') || '/app';
       if (res.status === 202 || res.status === 403) { showNotice(data.message || data.error); if (res.status === 202) f.reset(); return; }
-      if (res.ok) location.href = /^\/(?!\/)/.test(next) ? next : '/'; else $('.error').textContent = data.error || 'Sign in failed';
+      if (res.ok) location.href = /^\/(?!\/)/.test(next) ? next : '/app'; else $('.error').textContent = data.error || 'Sign in failed';
     };
   </script>
 </body>

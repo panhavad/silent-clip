@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { db, CLIPS_DIR, HISTORY_THUMBS_DIR, RESTORE_FILE, applySettings, userSettings, serverWatchAllowed } from './db.js';
+import { db, CLIPS_DIR, HISTORY_THUMBS_DIR, RESTORE_FILE, applySettings, userSettings, serverWatchAllowed, accessExpired } from './db.js';
 import { hashPassword, requireAdmin } from './auth.js';
 import { stopUser, syncUser, queueCommand, watchingOverview } from './watch/manager.js';
 import { removeUserBrowserData } from './social/index.js';
@@ -33,6 +33,7 @@ function userRow(u) {
     id: u.id, email: u.email, name: u.name, avatar: u.avatar, role: u.role, status: u.status,
     google: Boolean(u.google_id), password: Boolean(u.password_hash), createdAt: u.created_at, lastLoginAt: u.last_login_at,
     processing, serverWatch: serverWatchAllowed(u), storage: dirSize(path.join(CLIPS_DIR, String(u.id))), storageLimit: u.storage_limit || null, ...stats,
+    expiresAt: u.role === 'admin' ? null : u.expires_at || null, expired: accessExpired(u),
   };
 }
 
@@ -79,7 +80,24 @@ router.patch('/users/:id', (req, res) => {
     storageLimit = n ? Math.round(n) : null;
   }
   const serverWatch = req.body.serverWatch !== undefined ? (req.body.serverWatch ? 1 : 0) : u.server_watch;
-  db.prepare('UPDATE users SET role = ?, status = ?, name = ?, storage_limit = ?, server_watch = ? WHERE id = ?').run(role, status, name, storageLimit, serverWatch, u.id);
+  // Access end date (ms since epoch); null / 0 = never expires. Administrators can't be given one.
+  let expiresAt = u.expires_at;
+  if (req.body.expiresAt !== undefined) {
+    const n = req.body.expiresAt === null || req.body.expiresAt === '' ? 0 : Number(new Date(req.body.expiresAt));
+    if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: 'Invalid expiry date' });
+    if (n && (role === 'admin' || self)) return res.status(400).json({ error: 'Administrator accounts don\'t expire' });
+    expiresAt = n ? Math.round(n) : null;
+  }
+  db.prepare('UPDATE users SET role = ?, status = ?, name = ?, storage_limit = ?, server_watch = ?, expires_at = ? WHERE id = ?')
+    .run(role, status, name, storageLimit, serverWatch, expiresAt, u.id);
+  const updated = getUser(u.id);
+  if (accessExpired(updated) && !accessExpired(u)) {
+    // Expired now: stop their server watchers and tell an open dashboard to stop watching in the browser.
+    stopUser(u.id);
+    queueCommand(u.id, { type: 'stop' });
+  } else if (!accessExpired(updated) && accessExpired(u)) {
+    syncUser(u.id);
+  }
   if (!serverWatch && u.server_watch) {
     // Turning it off stops their server watchers and moves them back to watching in the browser.
     stopUser(u.id);

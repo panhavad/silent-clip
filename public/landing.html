@@ -394,8 +394,8 @@
     fetch('/api/me', { credentials: 'same-origin' }).then((r) => {
       if (!r.ok) return;
       $('.nav-cta .signin').remove();
-      $$('.signin').forEach((a) => { a.textContent = 'Open app'; a.href = '/'; });
-      const start = $('.nav-cta .start'); start.textContent = 'Open app'; start.href = '/';
+      $$('.signin').forEach((a) => { a.textContent = 'Open app'; a.href = '/app'; });
+      const start = $('.nav-cta .start'); start.textContent = 'Open app'; start.href = '/app';
     }).catch(() => {});
   </script>
 </body>

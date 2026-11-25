@@ -245,11 +245,65 @@ test('sign-in sessions slide forward instead of expiring', async () => {
   assert.equal((await fetch(`${base}/api/me`, { headers: { cookie } })).headers.get('set-cookie'), null);
 });
 
-test('"/" shows the product page to visitors and the app once signed in', async () => {
-  const page = async (headers = {}) => (await fetch(`${base}/`, { headers })).text();
-  const visitor = await page();
-  assert.match(visitor, /<link rel="stylesheet" href="\/css\/landing\.css">/);
-  assert.match(visitor, /href="\/login\.html\?signup=1"/, 'sign-up call to action');
+test('visitors get the landing page at "/", signed-in users get the app at "/app"', async () => {
+  const get = (p, headers = {}) => fetch(base + p, { headers, redirect: 'manual' });
+  const visitor = await get('/');
+  assert.equal(visitor.status, 200);
+  assert.match(await visitor.text(), /<link rel="stylesheet" href="\/css\/landing\.css">/);
+  assert.equal(visitor.headers.get('cache-control'), 'no-store');
+  for (const p of ['/app', '/index.html']) {
+    const r = await get(p);
+    assert.deepEqual([r.status, r.headers.get('location')], [302, '/'], `${p} sends signed-out visitors to the landing page`);
+  }
   assert.ok(cookie, 'an earlier test signed in');
-  assert.match(await page({ cookie }), /<title>SlientClip - viral Twitch moments to Shorts<\/title>/);
+  const home = await get('/', { cookie });
+  assert.deepEqual([home.status, home.headers.get('location')], [302, '/app'], 'signed in: "/" opens the app');
+  const appPage = await get('/app', { cookie });
+  assert.equal(appPage.status, 200);
+  assert.match(await appPage.text(), /<title>SlientClip - viral Twitch moments to Shorts<\/title>/);
+  assert.equal((await get('/index.html', { cookie })).headers.get('location'), '/app');
+});
+test('admin can set an access expiry: expired users can look but not use anything', async () => {
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  const adminCookie = cookie;
+  const admin = (await call('/api/me')).data;
+  const user = (await call('/api/admin/users', { method: 'POST', body: { email: 'trial@x.co', password: 'password123' } })).data.user;
+  assert.equal(user.expiresAt, null, 'no expiry by default');
+  assert.equal((await call(`/api/admin/users/${admin.id}`, { method: 'PATCH', body: { expiresAt: Date.now() + 86400000 } })).status, 400, 'admins never expire');
+  const later = Date.now() + 3 * 86400000;
+  assert.equal((await call(`/api/admin/users/${user.id}`, { method: 'PATCH', body: { expiresAt: later } })).data.expiresAt, later);
+
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'trial@x.co', password: 'password123' } });
+  const userCookie = cookie;
+  let me = (await call('/api/me')).data;
+  assert.deepEqual([me.expired, me.expiresAt], [false, later], 'still active before the date');
+  assert.equal((await call('/api/streamers', { method: 'POST', body: { url: 'shroud' } })).status, 200);
+
+  cookie = adminCookie;
+  const ended = (await call(`/api/admin/users/${user.id}`, { method: 'PATCH', body: { expiresAt: Date.now() - 1000 } })).data;
+  assert.equal(ended.expired, true);
+
+  cookie = userCookie;
+  me = (await call('/api/me')).data;
+  assert.equal(me.expired, true, 'can still sign in and load the app');
+  assert.equal(me.contact, 'a@b.co', 'told who to contact');
+  assert.equal((await call('/api/clips')).status, 200, 'can still look at clips');
+  assert.equal((await call('/api/streamers')).status, 200);
+  for (const [p, opts] of [['/api/streamers', { method: 'POST', body: { url: 'xqc' } }], ['/api/settings', { method: 'PUT', body: { sensitivity: 9 } }],
+    ['/api/posts', { method: 'POST', body: { clipId: 'x', platform: 'tiktok' } }], ['/api/server-watch', { method: 'PUT', body: { running: true } }], ['/api/backup', {}]]) {
+    const r = await call(p, opts);
+    assert.deepEqual([r.status, r.data.code], [403, 'expired'], `${opts.method || 'GET'} ${p} is blocked`);
+  }
+  const beat = (await call('/api/watch/heartbeat', { method: 'POST', body: { running: true, processing: 'browser', streamers: [] } })).data;
+  assert.equal(beat.expired, true);
+  assert.ok(beat.commands.some((c) => c.type === 'stop'), 'an open dashboard is told to stop watching');
+
+  cookie = adminCookie;
+  assert.equal((await call(`/api/admin/users/${user.id}`, { method: 'PATCH', body: { expiresAt: null } })).data.expired, false);
+  cookie = userCookie;
+  assert.equal((await call('/api/me')).data.expired, false, 'renewed');
+  assert.equal((await call('/api/settings', { method: 'PUT', body: { sensitivity: 9 } })).status, 200);
+  cookie = adminCookie;
 });

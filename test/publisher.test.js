@@ -272,3 +272,22 @@ test('Chrome extension: pair, take over YouTube, claim a due post, upload and re
   assert.equal((await ext('/api/ext/jobs', { token })).status, 401);
   await call('/api/accounts/youtube', { method: 'DELETE' });
 });
+
+test('expired accounts: due posts wait and nothing new is planned', async () => {
+  const { db } = await import('../server/db.js');
+  const { planUser, createPost, EXPIRED_STEP } = await import('../server/publisher.js');
+  const me = (await call('/api/me')).data;
+  await call('/api/accounts/tiktok/login', { method: 'POST' });
+  const clip = await uploadClip('Expired clip', 90);
+  // The first account is an admin, and admins never expire: make it a normal user for this test.
+  db.prepare("UPDATE users SET role = 'user', expires_at = ? WHERE id = ?").run(Date.now() - 1000, me.id);
+  try {
+    const id = createPost(me.id, clip.id, 'tiktok', Date.now() - 1000);
+    await runDuePosts({ wait: true });
+    const p = db.prepare('SELECT status, step FROM posts WHERE id = ?').get(id);
+    assert.deepEqual([p.status, p.step], ['scheduled', EXPIRED_STEP], 'not posted while expired');
+    assert.equal(planUser(me.id), 0, 'the planner adds nothing');
+  } finally {
+    db.prepare("UPDATE users SET role = 'admin', expires_at = NULL WHERE id = ?").run(me.id);
+  }
+});

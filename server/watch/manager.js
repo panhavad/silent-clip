@@ -5,7 +5,7 @@ import express from 'express';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { db, DATA_DIR, userSettings, applySettings, onSettingsChanged, serverWatchAllowed } from '../db.js';
+import { db, DATA_DIR, userSettings, applySettings, onSettingsChanged, serverWatchAllowed, accessExpired } from '../db.js';
 import { fetchMaster } from '../twitch.js';
 import { getChannel } from '../../public/js/engine/twitch.js';
 import { SegmentBuffer } from '../../public/js/engine/hls.js';
@@ -228,7 +228,7 @@ class ServerWatcher {
 // ---------- lifecycle ----------
 function wantedStreamers(userId) {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  if (!user || user.status !== 'active') return { user, list: [] };
+  if (!user || user.status !== 'active' || accessExpired(user)) return { user, list: [] };
   const s = userSettings(user);
   if (s.processing !== 'server' || !s.serverRunning) return { user, settings: s, list: [] };
   const list = db.prepare('SELECT * FROM streamers WHERE user_id = ? AND enabled = 1 ORDER BY created_at').all(userId).slice(0, MAX_PER_USER);
@@ -260,6 +260,12 @@ export function startServerWatchers() {
   fs.mkdirSync(WORK_DIR, { recursive: true });
   onSettingsChanged((userId) => syncUser(userId));
   for (const { id } of db.prepare('SELECT id FROM users').all()) syncUser(id);
+  // Access can run out while watchers are running: stop those accounts' watchers once their date passes.
+  setInterval(() => {
+    for (const userId of new Set([...watchers.values()].map((w) => w.userId))) {
+      if (accessExpired(db.prepare('SELECT * FROM users WHERE id = ?').get(userId))) stopUser(userId);
+    }
+  }, 60000).unref();
 }
 
 // ---------- API ----------
@@ -326,7 +332,9 @@ router.post('/api/watch/heartbeat', (req, res) => {
     at: Date.now(), running, mode: req.body.mode === 'foreground' ? 'foreground' : 'background',
     since: running ? (prev?.running ? prev.since : Date.now()) : null, streamers, commands: [],
   });
-  res.json({ commands: delivered });
+  // Access that ran out (or was renewed) while the dashboard was open: tell it so it can lock or unlock itself.
+  const expired = accessExpired(req.user);
+  res.json({ commands: expired ? [...delivered, { type: 'stop' }] : delivered, expired, expiresAt: req.user.role === 'admin' ? null : req.user.expires_at || null });
 });
 
 /** Everyone watching right now: server watchers plus browsers that reported recently. */

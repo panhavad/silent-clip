@@ -5,6 +5,30 @@ import { skeleton, showLoading } from './loader.js';
 const mb = (n) => (n >= 1e9 ? `${+(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${Math.round(n / 1e6)} MB` : `${Math.ceil(n / 1e3)} KB`);
 const LIMITS = [250e6, 500e6, 1e9, 2e9, 5e9, 10e9, 20e9, 50e9];
 
+const DAY = 86400000;
+const fmtDate = (t) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+const dateInput = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
+// Access expiry: after the date the user can still sign in and look, but everything is locked.
+function expiryCell(u) {
+  if (u.role === 'admin') return '<div class="expiry-cell small muted">Admins don\'t expire</div>';
+  const left = u.expiresAt ? u.expiresAt - Date.now() : null;
+  const badge = !u.expiresAt ? ''
+    : u.expired ? `<span class="badge expired" title="Expired ${new Date(u.expiresAt).toLocaleString()}">Expired ${timeAgo(u.expiresAt)}</span>`
+      : `<span class="badge ${left <= 7 * DAY ? 'soon' : ''}" title="${new Date(u.expiresAt).toLocaleString()}">Until ${fmtDate(u.expiresAt)}</span>`;
+  return `<div class="expiry-cell">${badge}
+    <select class="expiry" title="When this account's access ends. After that they can still sign in, but nothing works until you renew it.">
+      <option value="" selected>${u.expiresAt ? 'Change access…' : 'Access: no expiry'}</option>
+      ${u.expiresAt ? '<option value="none">Remove expiry</option>' : ''}
+      <option value="7">7 days from today</option><option value="30">30 days from today</option>
+      <option value="90">90 days from today</option><option value="365">1 year from today</option>
+      <option value="date">Pick a date…</option>
+      ${u.expired ? '' : '<option value="now">Expire now</option>'}
+    </select>
+    <div class="row expiry-pick hidden" style="gap:6px"><input type="date" class="expiry-date" min="${dateInput(Date.now())}" value="${dateInput(u.expiresAt && !u.expired ? u.expiresAt : Date.now() + 30 * DAY)}">
+      <button class="btn sm primary set-expiry">Set</button><button class="btn sm ghost cancel-expiry" title="Cancel">${icon('x')}</button></div></div>`;
+}
+
 // Usage bar + limit picker. Over the limit, the user's oldest clips are replaced as new ones are saved.
 function storageCell(u) {
   const limit = u.storageLimit;
@@ -185,7 +209,7 @@ export class AdminView {
       return `<tr data-id="${u.id}">
         <td><div class="row">${u.avatar ? `<img class="avatar" src="${esc(u.avatar)}" alt="" loading="lazy" decoding="async">` : `<div class="avatar initials">${esc((u.name || u.email || '?')[0].toUpperCase())}</div>`}
           <div style="min-width:0"><b>${esc(u.name || '')}</b>${self ? ' <span class="small muted">(you)</span>' : ''}<div class="small muted">${esc(u.email || '')}${u.google ? ' · Google' : ''}</div></div></div></td>
-        <td data-label="Status"><span class="badge st-${u.status}">${u.status}</span></td>
+        <td data-label="Status"><span class="badge st-${u.status}">${u.status}</span>${self ? '' : expiryCell(u)}</td>
         <td data-label="Role"><select class="role" ${self ? 'disabled' : ''}><option value="user" ${u.role === 'user' ? 'selected' : ''}>User</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>
         <td data-label="Usage" class="small muted"><div>${u.clips} clips<br>${u.streamers} streamers · ${u.processing === 'server' ? `${icon('server')} server` : `${icon('monitor')} browser`}</div>
           <label class="switch sm" style="margin-top:6px" title="Allow this account to watch and clip on the server (keeps going when their browser is closed)">
@@ -233,6 +257,30 @@ export class AdminView {
       };
       q('.limit-gb').onkeydown = (e) => { if (e.key === 'Enter') q('.set-limit').click(); if (e.key === 'Escape') this.render(); };
       q('.cancel-limit').onclick = () => this.render();
+      const setExpiry = (at) => {
+        if (at && at <= Date.now() && !confirm(`End ${u.email}'s access now? They can still sign in, but watching, clipping, posting and changes stop until you renew it.`)) { this.render(); return; }
+        act(() => api(`/api/admin/users/${u.id}`, { method: 'PATCH', body: { expiresAt: at } }),
+          !at ? `${u.email}: access no longer expires` : at <= Date.now() ? `${u.email}: access ended` : `${u.email}: access until ${fmtDate(at)}`);
+      };
+      q('.expiry') && (q('.expiry').onchange = (e) => {
+        const v = e.target.value;
+        if (v === 'date') {
+          e.target.classList.add('hidden');
+          q('.expiry-pick').classList.remove('hidden');
+          return q('.expiry-date').focus();
+        }
+        if (v === 'none') return setExpiry(null);
+        if (v === 'now') return setExpiry(Date.now());
+        // N days from today, until the end of that day.
+        if (v) setExpiry(new Date(Date.now() + Number(v) * DAY).setHours(23, 59, 59, 0));
+      });
+      q('.set-expiry') && (q('.set-expiry').onclick = () => {
+        const v = q('.expiry-date').value;
+        if (!v) return toast('Pick a date', 'error');
+        const [y, m, d] = v.split('-').map(Number);
+        setExpiry(new Date(y, m - 1, d, 23, 59, 59).getTime());
+      });
+      q('.cancel-expiry') && (q('.cancel-expiry').onclick = () => this.render());
       q('.reset').onclick = async () => {
         if (!confirm(`Reset the password for ${u.email}? Their current sessions will be signed out.`)) return;
         const r = await act(() => api(`/api/admin/users/${u.id}/reset-password`, { method: 'POST', body: {} }));

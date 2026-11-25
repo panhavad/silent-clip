@@ -120,6 +120,8 @@ if (!userCols.has('last_login_at')) db.exec('ALTER TABLE users ADD COLUMN last_l
 if (!userCols.has('storage_limit')) db.exec('ALTER TABLE users ADD COLUMN storage_limit INTEGER');
 // Admin switch: may this account watch & clip on the server (processing = 'server')? 1 = allowed.
 if (!userCols.has('server_watch')) db.exec('ALTER TABLE users ADD COLUMN server_watch INTEGER NOT NULL DEFAULT 1');
+// Access end date an admin set (ms); NULL = never. After it passes the user can still sign in and look, but can't use anything.
+if (!userCols.has('expires_at')) db.exec('ALTER TABLE users ADD COLUMN expires_at INTEGER');
 // v1.9: watching never starts on its own unless chosen. Auto-start used to default to on and was saved with
 // every settings form, so switch it off once for existing accounts; users can turn it back on in Settings.
 if (db.prepare('PRAGMA user_version').get().user_version < 1) {
@@ -236,6 +238,13 @@ const settingsListeners = new Set();
 export const onSettingsChanged = (fn) => settingsListeners.add(fn);
 
 export const serverWatchAllowed = (user) => user?.server_watch !== 0;
+
+/** Has this account's access ended? Administrators never expire. */
+export const accessExpired = (user, now = Date.now()) => Boolean(user && user.role !== 'admin' && user.expires_at && user.expires_at <= now);
+export const EXPIRED_MESSAGE = 'Your access has expired. Contact your administrator to renew it.';
+/** Who expired users should contact: ADMIN_EMAIL, or the longest-standing active admin. */
+export const adminContact = () => process.env.ADMIN_EMAIL?.trim()
+  || db.prepare("SELECT email FROM users WHERE role = 'admin' AND status = 'active' AND email IS NOT NULL ORDER BY id LIMIT 1").get()?.email || null;
 
 export function userSettings(user) {
   let s = {};

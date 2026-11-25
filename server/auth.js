@@ -149,7 +149,7 @@ export async function googleCallback(req, res) {
     setCookie(res, 'sc_oauth_state', '', 0);
     const err = signIn(res, user);
     if (err) return res.redirect(`/login.html?notice=${encodeURIComponent(err)}`);
-    res.redirect('/');
+    res.redirect('/app');
   } catch (e) {
     res.redirect(`/login.html?error=${encodeURIComponent(e.message)}`);
   }
