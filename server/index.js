@@ -8,7 +8,7 @@ import {
   loadUser, requireUser, destroySession, hashPassword, verifyPassword, signIn,
   googleConfigured, googleStart, googleCallback,
 } from './auth.js';
-import { masterPlaylist } from './twitch.js';
+import { masterPlaylist, mediaPlaylist } from './twitch.js';
 import { router as publisher, startScheduler, planUser } from './publisher.js';
 import { router as socialRouter, startSessionKeepAlive } from './social/index.js';
 import { startSessionKeepers } from './social/keeper.js';
@@ -183,6 +183,7 @@ app.delete('/api/streamers/:id', (req, res) => {
 });
 
 app.get('/api/twitch/master/:login', masterPlaylist);
+app.get('/api/twitch/playlist', mediaPlaylist);
 
 // ---------- streamer cam position (for the "streamer cam + gameplay" layout) ----------
 app.get('/api/cams/:login', (req, res) => {

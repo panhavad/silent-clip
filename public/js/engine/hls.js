@@ -77,8 +77,9 @@ export function parseMedia(text, baseUrl) {
 }
 
 export class SegmentBuffer {
-  constructor({ getMasterText, maxHeight = 720, retainSec = 90, onEvent = () => {} }) {
+  constructor({ getMasterText, fetchPlaylist = (url) => fetch(url, { cache: 'no-store' }), maxHeight = 720, retainSec = 90, onEvent = () => {} }) {
     this.getMasterText = getMasterText;
+    this.fetchPlaylist = fetchPlaylist;
     this.maxHeight = maxHeight;
     this.retainSec = retainSec;
     this.onEvent = onEvent;
@@ -113,7 +114,7 @@ export class SegmentBuffer {
     if (!this.running) return;
     let wait = 2000;
     try {
-      const res = await fetch(this.variant.url, { cache: 'no-store' });
+      const res = await this.fetchPlaylist(this.variant.url);
       if (!res.ok) throw Object.assign(new Error(`Playlist HTTP ${res.status}`), { status: res.status });
       const pl = parseMedia(await res.text(), this.variant.url);
       wait = Math.max(1000, pl.targetDuration * 500);
@@ -134,6 +135,7 @@ export class SegmentBuffer {
         this.segments.push({ seq: s.seq, pdt, duration: s.duration, bytes });
       }
       if (newSegs) {
+        this.lastDataAt = Date.now();
         const inAd = adSegs === newSegs;
         if (inAd !== Boolean(this.inAd)) this.onEvent({ type: 'ad', start: inAd });
         this.inAd = inAd;

@@ -3,7 +3,7 @@ import { icon } from './icons.js';
 
 const STATUS_LABEL = {
   starting: 'Starting', checking: 'Checking', offline: 'Offline', live: 'Live', connecting: 'Connecting',
-  watching: 'Watching live', error: 'Error', elsewhere: 'In other window',
+  watching: 'Watching live', error: 'Error', elsewhere: 'In other window', reconnecting: 'Reconnecting video',
 };
 const STAGE_LABEL = {
   capturing: `${icon('record', 'rec')}Capturing`, queued: `${icon('clock')}Queued on server`, transcribing: `${icon('captions')}Transcribing speech`,

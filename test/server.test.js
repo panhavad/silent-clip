@@ -357,3 +357,13 @@ test('streamer cam setting: manual box, auto with the last detection kept, off; 
   assert.equal((await call('/api/cams/jynxzi', { method: 'PUT', body: { mode: 'off' } })).data.mode, 'off');
   assert.equal((await call('/api/cams/not a login', { method: 'GET' })).status, 400);
 });
+
+test('the media-playlist relay only fetches Twitch playlist addresses', async () => {
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  for (const u of ['http://video-weaver.ttvnw.net/v1/playlist/x.m3u8', 'https://evil.example.com/x.m3u8', 'https://ttvnw.net.evil.com/x', 'https://127.0.0.1/x', 'not a url']) {
+    assert.equal((await call(`/api/twitch/playlist?u=${encodeURIComponent(u)}`)).status, 400, u);
+  }
+  cookie = '';
+  assert.equal((await call(`/api/twitch/playlist?u=${encodeURIComponent('https://a.playlist.ttvnw.net/x.m3u8')}`)).status, 401, 'signed-in users only');
+});

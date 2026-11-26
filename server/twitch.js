@@ -5,12 +5,13 @@ const CLIENT_ID = process.env.TWITCH_GQL_CLIENT_ID || 'kimne78kx3ncx6brgo4mv6wki
 const LOGIN_RE = /^[a-z0-9_]{2,25}$/;
 
 const hits = new Map();
-function rateLimited(userId) {
+function rateLimited(userId, kind = 'master', max = 60) {
   const now = Date.now();
-  const list = (hits.get(userId) || []).filter((t) => now - t < 60_000);
+  const k = `${kind}:${userId}`;
+  const list = (hits.get(k) || []).filter((t) => now - t < 60_000);
   list.push(now);
-  hits.set(userId, list);
-  return list.length > 60;
+  hits.set(k, list);
+  return list.length > max;
 }
 
 export async function fetchMaster(login) {
@@ -51,5 +52,23 @@ export async function masterPlaylist(req, res) {
     res.type('application/vnd.apple.mpegurl').set('Cache-Control', 'no-store').send(await fetchMaster(login));
   } catch (e) {
     res.status(e.status || 502).json({ error: e.status ? e.message : `Twitch request failed: ${e.message}` });
+  }
+}
+
+// Twitch refuses the media (variant) playlist when a browser asks for it from another site (it checks the
+// Origin header, which pages can't change), so browsers fetch that small text file through here too. Only
+// Twitch playlist hosts are relayed; the video segments still go straight from Twitch's CDN to the browser.
+const PLAYLIST_HOST = /^([a-z0-9-]+\.)+ttvnw\.net$/i;
+export async function mediaPlaylist(req, res) {
+  let url;
+  try { url = new URL(String(req.query.u || '')); } catch { /* invalid */ }
+  if (!url || url.protocol !== 'https:' || !PLAYLIST_HOST.test(url.hostname)) return res.status(400).json({ error: 'Not a Twitch playlist address' });
+  // A playlist refresh every ~2-3 s per watched stream.
+  if (rateLimited(req.user.id, 'media', 1200)) return res.status(429).json({ error: 'Too many requests' });
+  try {
+    const r = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(10000) });
+    res.status(r.status).type('application/vnd.apple.mpegurl').set('Cache-Control', 'no-store').send(await r.text());
+  } catch (e) {
+    res.status(502).json({ error: `Twitch request failed: ${e.message}` });
   }
 }

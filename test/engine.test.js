@@ -163,3 +163,84 @@ test('streamer cam: a face that stays put is the webcam, snapped to its overlay 
   assert.equal(resolvePlan({ mode: 'auto', last: plan, lastAt: Date.now() }, { type: 'none' }).reused, true);
   assert.equal(resolvePlan({ mode: 'auto', last: plan, lastAt: 1 }, { type: 'none' }).type, 'none', 'a very old detection is not reused');
 });
+
+test('watching keeps the learned chat baseline through video drops and short offline blips', async () => {
+  const { StreamWatch, OFFLINE_GRACE_MS } = await import('../public/js/engine/pipeline.js');
+  let t = 1_800_000_000_000;
+  let live = true;
+  const buffers = [], chats = [];
+  class FakeBuffer {
+    constructor(o) { this.o = o; this.latencyMs = 4000; this.bufferedSec = 40; this.lastDataAt = t; buffers.push(this); }
+    async start() { if (FakeBuffer.fail) throw new Error('Playlist HTTP 502'); }
+    stop() { this.stopped = true; }
+    get liveEdge() { return t - 5000; }
+    extract() { return { bytes: new Uint8Array(4), ext: 'ts', offsetSec: 0, durationSec: 30, startPdt: t - 40000 }; }
+  }
+  class FakeChat {
+    constructor(login, h) { this.h = h; chats.push(this); }
+    connect() { this.h.onState('connected'); }
+    close() { this.closed = true; }
+  }
+  const logs = [], failed = [];
+  const w = new StreamWatch('xqc', { preRollSec: 20, postRollSec: 10, reactionDelaySec: 3, sensitivity: 5, cooldownSec: 120, maxClipsPerHour: 10 },
+    { getChannel: async () => ({ login: 'xqc', live }), getMasterText: async () => '', Buffer: FakeBuffer, Chat: FakeChat, now: () => t },
+    { log: (m) => logs.push(m), clipFailed: (job, m) => failed.push(m) });
+  try {
+    await w.checkLive();
+    assert.equal(w.status, 'watching');
+    const analyzer = w.analyzer;
+    let stats;
+    w.hooks.stats = (s) => { stats = s; };
+    t += 46000; w.tick();
+    assert.equal(stats.warm, true, 'warm-up counts from the chat connection, even when nobody has typed yet');
+
+    // A viral moment is being captured when the video drops: the clip fails, only the video reconnects.
+    w.queueMoment(w.analyzer.manualMoment(t));
+    buffers[0].o.onEvent({ type: 'ended' });
+    assert.equal(w.status, 'reconnecting');
+    assert.match(failed[0], /before the clip was captured/);
+    assert.equal(w.buffer, null);
+    await w.checkLive();
+    assert.equal(w.status, 'watching');
+    assert.equal(buffers.length, 2);
+    assert.equal(w.analyzer, analyzer, 'same analyzer: the learned baseline continues');
+    assert.equal(chats.length, 1, 'chat stayed connected');
+    assert.ok(logs.includes('Video reconnected (chat baseline kept)'));
+
+    // A failing reconnect keeps retrying without touching the baseline.
+    buffers[1].o.onEvent({ type: 'ended' });
+    FakeBuffer.fail = true;
+    await w.checkLive();
+    assert.equal(w.status, 'reconnecting');
+    FakeBuffer.fail = false;
+    await w.checkLive();
+    assert.equal(w.status, 'watching');
+    assert.equal(w.analyzer, analyzer);
+
+    // Twitch says "offline" while the video still flows: ignored.
+    live = false;
+    buffers.at(-1).lastDataAt = t;
+    await w.checkLive(); await w.checkLive();
+    assert.equal(w.status, 'watching');
+    // Really offline (no video either) for a few minutes, then back: still the same baseline.
+    t += 60000;
+    await w.checkLive();
+    assert.equal(w.status, 'offline');
+    assert.equal(w.analyzer, analyzer, 'a short offline keeps chat and the baseline');
+    t += OFFLINE_GRACE_MS - 120000;
+    await w.checkLive();
+    live = true;
+    await w.checkLive();
+    assert.deepEqual([w.status, w.analyzer === analyzer, chats.length], ['watching', true, 1]);
+
+    // Offline for longer than the grace period: the stream ended, the baseline is cleared.
+    live = false;
+    buffers.at(-1).lastDataAt = t - 60000;
+    await w.checkLive(); await w.checkLive();
+    t += OFFLINE_GRACE_MS + 1000;
+    await w.checkLive();
+    assert.deepEqual([w.status, w.analyzer, chats[0].closed], ['offline', null, true]);
+  } finally {
+    w.stop();
+  }
+});

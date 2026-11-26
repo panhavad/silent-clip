@@ -30,6 +30,7 @@ Finished clips are posted to YouTube / TikTok / Instagram **without API keys**, 
 - **Background mode** (silent, inside the app tab, which may sit in a background tab) or **Foreground mode** (one browser window per streamer, or one grid window, with live players).
 - **Run on server** option: watch and clip on the server, so clipping continues when the web app is closed.
 - Watching only shows as running when it really is, and never starts by itself unless you turn on auto-start.
+- **Watching keeps going.** The chat baseline the hype meter learns (*learning chat baseline…* for the first ~45 s, counted from when chat connects) is kept for as long as the stream runs. If the video drops (network blip, expiring Twitch playlist URLs, a long ad), only the video reconnects (3 s, then up to a minute between tries; the card shows *Reconnecting video*) while chat and the baseline carry on. A stream that goes offline briefly (the streamer's software crashed, a quick restart) keeps chat and the baseline for 10 minutes, and a "went offline" report from Twitch is ignored while video is still arriving. The same engine runs in the browser and on the server.
 
 **Clipping**
 - Chat analysis (Twitch IRC over WebSocket) detects spikes in message rate, emotes, hype words and copy-paste spam against a rolling baseline.
@@ -71,7 +72,7 @@ Browser (per user)                                        Server (Node + SQLite)
 │ watcher.worker.js  (one per streamer)         │         │ auth (email + Google)         │
 │  ├─ live check   → gql.twitch.tv (CORS)       │  ───►   │ streamers / settings / admin  │
 │  ├─ HLS buffer   → Twitch CDN segments (CORS) │         │ clips: mp4 / jpg / source     │
-│  ├─ chat         → irc-ws.chat.twitch.tv      │         │ master-playlist relay*        │
+│  ├─ chat         → irc-ws.chat.twitch.tv      │         │ playlist relay*               │
 │  └─ analyzer     → viral moment               │         │ server watchers (ffmpeg,      │
 │ render.js (ffmpeg.wasm) → 9:16 mp4 + captions │─upload─►│   Whisper) for "Run on server"│
 └───────────────────────────────────────────────┘         │ publisher: queue + planner    │
@@ -86,7 +87,7 @@ Your Chrome + SlientClip Publisher extension                              │ du
 └───────────────────────────────────────────────┘
 ```
 
-\* Twitch's `usher` endpoint (the master `.m3u8`, a tiny text file) only sends CORS headers to twitch.tv, so the server relays just that one text manifest. Media playlists and all video segments are fetched by the browser directly.
+\* Twitch only lets twitch.tv pages read its playlists: the `usher` master `.m3u8` sends no CORS headers to other sites, and the media playlist is refused (HTTP 403) for any other site's Origin. So the server relays those two small text files (only Twitch `ttvnw.net` playlist addresses, signed-in users only). The video segments are fetched by the browser directly from Twitch's CDN.
 ## Quick start (Docker Compose)
 
 ```bash
