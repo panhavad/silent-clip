@@ -341,3 +341,19 @@ test('the welcome tour opens once for new accounts and is remembered when finish
   assert.equal((await call('/api/me/tour', { method: 'POST' })).status, 200);
   assert.equal((await call('/api/me')).data.tourSeen, true, 'not shown again');
 });
+
+test('streamer cam setting: manual box, auto with the last detection kept, off; clips default to the cam layout', async () => {
+  cookie = '';
+  await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'password123' } });
+  assert.equal((await call('/api/me')).data.settings.layout, 'facecam');
+  assert.deepEqual((await call('/api/cams/jynxzi')).data.mode, 'auto');
+  const detected = { type: 'cam', cam: { x: 0.75, y: 0.05, w: 0.24, h: 0.3 }, face: { x: 0.8, y: 0.1, w: 0.12, h: 0.24 }, score: 0.8 };
+  const d = (await call('/api/cams/jynxzi', { method: 'PUT', body: { detected } })).data;
+  assert.deepEqual([d.mode, d.last.cam], ['auto', detected.cam]);
+  assert.ok(d.lastAt > 0);
+  assert.equal((await call('/api/cams/jynxzi', { method: 'PUT', body: { mode: 'manual', box: { x: 0.9, y: 0, w: 0.5, h: 0.2 } } })).status, 400, 'box must fit the frame');
+  const m = (await call('/api/cams/jynxzi', { method: 'PUT', body: { mode: 'manual', box: { x: 0, y: 0.7, w: 0.2, h: 0.28 } } })).data;
+  assert.deepEqual([m.mode, m.box, m.last.cam], ['manual', { x: 0, y: 0.7, w: 0.2, h: 0.28 }, detected.cam]);
+  assert.equal((await call('/api/cams/jynxzi', { method: 'PUT', body: { mode: 'off' } })).data.mode, 'off');
+  assert.equal((await call('/api/cams/not a login', { method: 'GET' })).status, 400);
+});

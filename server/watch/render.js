@@ -1,9 +1,10 @@
 // Server-side rendering with native ffmpeg (used when a user picks "Run on server").
-// Mirrors the browser layout: 9:16 frame, hook headline, watermark, chat bubble, timed subtitles.
+// Mirrors the browser layout: 9:16 frame, hook headline, timed subtitles.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { anchors } from '../../public/js/engine/render.js';
+import { anchors, resolveLayout } from '../../public/js/engine/render.js';
+import { camFilter } from '../../public/js/engine/facecam.js';
 
 export const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const FONT = process.env.FONT_FILE || '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
@@ -43,10 +44,11 @@ export function wrap(text, maxChars, maxLines) {
 
 const fmt = (n) => Number(n).toFixed(2);
 
-export async function renderServer({ dir, input, offsetSec = 0, durationSec = 30, caption = '', chatLine = '', login = '',
-  layout = 'blur', resolution = '720x1280', captions = true, subtitles = [], thumbAt = 20 }) {
+export async function renderServer({ dir, input, offsetSec = 0, durationSec = 30, caption = '',
+  layout: wanted = 'blur', cam = null, resolution = '720x1280', captions = true, subtitles = [], thumbAt = 20 }) {
   const [W, H] = String(resolution).split('x').map(Number);
-  const { u, hookY, watermarkY, subY, chatY } = anchors(W, H, layout);
+  const { layout, geo } = resolveLayout(W, H, wanted, cam);
+  const { u, hookY, subY } = anchors(W, H, layout, geo);
   let n = 0;
   const textFile = (text) => {
     const f = path.join(dir, `t${n++}.txt`);
@@ -63,9 +65,6 @@ export async function renderServer({ dir, input, offsetSec = 0, durationSec = 30
       const color = i === hook.length - 1 && hook.length > 1 ? '0xffe14d' : 'white';
       draws.push(dt(l, `fontsize=${Math.round(56 * u)}:fontcolor=${color}:borderw=${Math.round(6 * u)}:bordercolor=black:x=(w-tw)/2:y=${fmt(y)}-th/2`));
     });
-    if (login) draws.push(dt(`twitch.tv/${login}`, `fontsize=${Math.round(24 * u)}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${fmt(watermarkY)}-th/2`));
-    const chat = plain(chatLine).slice(0, 40);
-    if (chat) draws.push(dt(chat, `fontsize=${Math.round(32 * u)}:fontcolor=white:box=1:boxcolor=0x9146ff@0.92:boxborderw=${Math.round(18 * u)}:x=(w-tw)/2:y=${fmt(chatY)}-th/2`));
   }
   for (const s of (subtitles || []).slice(0, 80)) {
     if (!(s.end > s.start)) continue;
@@ -77,7 +76,7 @@ export async function renderServer({ dir, input, offsetSec = 0, durationSec = 30
     });
   }
   const bw = Math.round(W / 8 / 2) * 2, bh = Math.round(H / 8 / 2) * 2;
-  const base = layout === 'crop'
+  const base = geo ? camFilter(W, H, geo) : layout === 'crop'
     ? `[0:v]fps=30,scale=-2:${H},crop=${W}:${H},setsar=1[l0]`
     : `[0:v]fps=30,split=2[a][b];[a]scale=${bw}:${bh}:force_original_aspect_ratio=increase,crop=${bw}:${bh},boxblur=8:2,scale=${W}:${H},eq=brightness=-0.12:saturation=1.2,setsar=1[bg];[b]scale=${W}:-2,setsar=1[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[l0]`;
   const graph = `${base};[l0]${[...draws, 'format=yuv420p'].join(',')}[v]`;
@@ -90,7 +89,7 @@ export async function renderServer({ dir, input, offsetSec = 0, durationSec = 30
     '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2', '-movflags', '+faststart', out]);
   const thumb = path.join(dir, 'thumb.jpg');
   await run(['-hide_banner', '-y', '-ss', fmt(Math.max(0, Math.min(thumbAt, durationSec - 0.5))), '-i', out, '-frames:v', '1', '-q:v', '4', thumb]).catch(() => null);
-  return { video: out, thumb: fs.existsSync(thumb) ? thumb : null, width: W, height: H, duration: durationSec };
+  return { video: out, thumb: fs.existsSync(thumb) ? thumb : null, width: W, height: H, duration: durationSec, layout };
 }
 
 /** 16 kHz mono float PCM for speech recognition. */

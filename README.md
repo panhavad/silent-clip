@@ -19,7 +19,7 @@ Finished clips are posted to YouTube / TikTok / Instagram **without API keys**, 
 | ![Clip library](public/img/screenshots/clips.webp) **Clip library** with one-click posting per platform | ![Selecting clips](public/img/screenshots/clips-select.webp) **Select** clips to delete or mark published |
 | ![Clip details](public/img/screenshots/clip-editor.webp) **Clip details**: viral score, title, description, hashtags, captions | ![Schedule](public/img/screenshots/schedule.webp) **Auto-publish** with random or fixed times, and the calendar |
 | ![Social accounts](public/img/screenshots/social-accounts.webp) **Social accounts**, login history and the Chrome extension | ![Extension popup](public/img/screenshots/extension-popup.webp) **SlientClip Publisher** extension popup |
-| ![YouTube: two ways to post](public/img/screenshots/youtube-routes.webp) **YouTube, two ways**: server browser kept open, or the Chrome extension | |
+| ![YouTube: two ways to post](public/img/screenshots/youtube-routes.webp) **YouTube, two ways**: server browser kept open, or the Chrome extension | ![Streamer cam + gameplay](public/img/screenshots/streamer-cam-picker.webp) **Streamer cam**: found automatically, adjustable per streamer |
 | ![Admin console](public/img/screenshots/admin.webp) **Admin**: approvals, storage limits, server watching, who's watching now, database backup | ![Phone layout](public/img/screenshots/mobile-clips.webp) **Phone** layout |
 
 ## Features
@@ -33,8 +33,9 @@ Finished clips are posted to YouTube / TikTok / Instagram **without API keys**, 
 
 **Clipping**
 - Chat analysis (Twitch IRC over WebSocket) detects spikes in message rate, emotes, hype words and copy-paste spam against a rolling baseline.
-- On a viral moment the app cuts **20 s before + 10 s after** (configurable) from an in-memory HLS ring buffer, renders **9:16** (blurred background or center crop) and saves it.
-- **Every clip is captioned by default**: a hook headline, the top chat reaction bubble, and **spoken-word subtitles** transcribed with Whisper in the streamer's broadcast language.
+- On a viral moment the app cuts **20 s before + 10 s after** (configurable) from an in-memory HLS ring buffer, renders **9:16** and saves it.
+- **The streamer's reaction is always in the clip** (default layout *Streamer cam + gameplay*): the streamer's webcam is found automatically and stacked above the gameplay, so viewers see what happened and how the streamer reacted. IRL / Just Chatting streams get a vertical crop that follows the streamer. Each streamer's cam position is remembered and can be adjusted by hand.
+- **Every clip is captioned by default**: a hook headline and **spoken-word subtitles** transcribed with Whisper in the streamer's broadcast language. Nothing else is drawn on the video (no channel name, no chat bubble).
 - Auto-generated **title, description, viral point (score, reason, chat evidence) and hashtags**.
 
 **Clip library**
@@ -223,7 +224,21 @@ Users never need a hard refresh or a cache clear after a deploy:
 
 ### Settings
 
-Sensitivity (1–10), seconds before/after the viral point, chat reaction delay, cooldown, max clips/hour, layout (blur / crop), output resolution (540p / 720p / 1080p), hook + chat captions (on by default), auto subtitles (on by default) and subtitle language (auto = streamer's Twitch language), keep raw source (for re-rendering), run on browser or server, default mode, auto-start (off by default).
+Sensitivity (1–10), seconds before/after the viral point, chat reaction delay, cooldown, max clips/hour, layout (streamer cam + gameplay (default) / full frame + blur / center crop), output resolution (540p / 720p / 1080p), hook headline (on by default), auto subtitles (on by default) and subtitle language (auto = streamer's Twitch language), keep raw source (for re-rendering), run on browser or server, default mode, auto-start (off by default).
+
+### Streamer cam + gameplay
+
+<img src="public/img/screenshots/streamer-cam.webp" alt="A rendered clip: the streamer's webcam on top, the Fortnite gameplay below, with the headline and subtitles" width="270" align="right">
+
+Clips are only worth watching with the streamer's reaction in them, so the default layout puts **the streamer's webcam on top and the gameplay below**, filling the 9:16 frame. The headline sits on the seam and the subtitles sit over the gameplay.
+
+- **Found automatically for every clip.** A few frames across the clip go through a small face detector (UltraFace, 1.5 MB, bundled in `public/models`, about a second per clip in the browser or on the server). The streamer's face is the one that stays in place across the frames (players in third-person games move and are seen from behind). The webcam rectangle is then snapped to the overlay's border: a straight edge present in every frame, with the still room on the inside and moving gameplay outside.
+- **IRL / Just Chatting**: when the streamer fills the picture, the clip is a vertical crop that follows them.
+- **Remembered per streamer.** The last position found is kept, so a clip where the streamer stepped away from the camera (or an ad break) still gets the cam. Without any cam found the clip uses the full frame with a blurred background.
+- **Set it by hand.** In a clip's details, **Layout** switches between the cam layout, full frame and center crop for a re-render. **Set streamer cam** shows a frame of the clip with a box to move, resize or redraw around the webcam. **Use for … and re-render** saves it for that streamer (used for all their future clips too), **Auto-detect** goes back to automatic, and **No cam** keeps that streamer on the full frame.
+- Existing accounts that used the old default (full frame + blur) were switched to the new layout; pick another layout in **Settings** any time.
+
+<br clear="right">
 
 Watching only shows as running when it really is. Watching in the browser stops when its page is closed or reloaded, and the app comes back **Stopped** instead of restarting on its own. After a reload in foreground mode it only shows running once an open watch window reports in, and it stops by itself when all watch windows are closed. Server watching is reported by the server, so it keeps running after you close the page.
 
@@ -285,7 +300,8 @@ server/            Express API, SQLite (node:sqlite), publisher + planner, admin
 server/social/     server-browser posting: profiles, live viewer, YouTube / TikTok / Instagram drivers
 server/watch/      server-side watching and rendering ("Run on server")
 server/extension.js  API for the Chrome extension (/api/ext) and /extension.zip
-public/            the web app (no build step); public/js/engine/ = watcher, analyzer, HLS, render, transcribe
+public/            the web app (no build step); public/js/engine/ = watcher, analyzer, HLS, render, transcribe, streamer cam (facecam.js)
+public/models/     bundled UltraFace face detector for the streamer-cam layout (MIT, see its license file)
 extension/         SlientClip Publisher Chrome extension (Manifest V3)
 test/              node:test suites
 public/img/        landing-page and README screenshots

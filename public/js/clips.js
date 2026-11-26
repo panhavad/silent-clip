@@ -4,7 +4,9 @@ import { getAccounts, accountFor, PLATFORM_META, loginTo } from './accounts.js';
 import { openBrowserViewer } from './browser-view.js';
 import { icon } from './icons.js';
 import { skeleton, showLoading, lazyImages } from './loader.js';
-import { renderClip } from './engine/render.js';
+import { renderClip, sourceStill } from './engine/render.js';
+import { planCam, getCamSetting, saveCamSetting } from './engine/cam.js';
+import { describePlan } from './engine/facecam.js';
 import { autoSubtitles, phrasesToText, textToPhrases } from './engine/transcribe.js';
 import { getChannel } from './engine/twitch.js';
 
@@ -260,12 +262,13 @@ export class ClipLibrary {
   }
 
   /**
-   * Re-render a clip from its stored raw source (in the browser) with hook caption, chat bubble
-   * and subtitles. With `autoTranscribe` and no subtitles given, speech is transcribed first.
+   * Re-render a clip from its stored raw source (in the browser) with the hook caption and
+   * subtitles. With `autoTranscribe` and no subtitles given, speech is transcribed first.
    */
-  async rerender(clip, { caption = clip.caption, chat = true, subtitles = [], autoTranscribe = true, onStatus = () => {} } = {}) {
+  async rerender(clip, { caption = clip.caption, subtitles = [], autoTranscribe = true, layout, onStatus = () => {} } = {}) {
     const v = clip.viral || {};
     const s = v.source || {};
+    layout ||= s.layout || 'blur';
     onStatus('Loading source…');
     const res = await fetch(`/api/clips/${clip.id}/source`);
     if (!res.ok) throw new Error('Raw source was not kept for this clip');
@@ -281,9 +284,10 @@ export class ClipLibrary {
       subtitles = sub.phrases;
       transcript = sub.text;
     }
+    const cam = layout === 'facecam' ? await planCam(clip.streamer, src, { known: s.cam, onStatus }) : null;
     const out = await renderClip({
-      ...src, caption, chatLine: chat ? (v.chatLine || '') : '', login: clip.streamer, subtitles,
-      layout: s.layout || 'blur', resolution: s.resolution || '720x1280', captions: true, thumbAt: v.offsetInClip ?? 20,
+      ...src, caption, subtitles,
+      layout, cam, resolution: s.resolution || '720x1280', captions: true, thumbAt: v.offsetInClip ?? 20,
       onProgress: (p) => onStatus(`Rendering ${Math.round(p * 100)}%`),
     });
     onStatus('Saving…');
@@ -292,9 +296,93 @@ export class ClipLibrary {
     if (out.thumb) form.append('thumb', out.thumb, 'thumb.jpg');
     form.append('caption', caption);
     form.append('subtitles', JSON.stringify(subtitles));
+    form.append('source', JSON.stringify({ layout, cam, rendered: out.layout }));
     if (transcript !== undefined) form.append('transcript', transcript);
     Object.assign(clip, await api(`/api/clips/${clip.id}/video`, { method: 'PUT', form }));
     return clip;
+  }
+
+  /**
+   * Shows a frame of the clip with a box around the streamer's webcam to drag, move or redraw. Saving stores it
+   * for this streamer (used for this and future clips); "Auto-detect" and "No cam" switch the streamer back.
+   */
+  async camPicker(clip, box, onSaved) {
+    if (!box.classList.contains('hidden') && box.dataset.ready) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    box.innerHTML = `<div class="small muted row">${icon('loader', 'spin')}Loading a frame of the clip…</div>`;
+    const v = clip.viral || {};
+    const s = v.source || {};
+    let still, setting;
+    try {
+      const res = await fetch(`/api/clips/${clip.id}/source`);
+      if (!res.ok) throw new Error('Raw source was not kept for this clip');
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      [still, setting] = await Promise.all([
+        sourceStill({ bytes, ext: s.ext || 'ts', offsetSec: s.offset || 0, atSec: v.offsetInClip ?? 5 }),
+        getCamSetting(clip.streamer),
+      ]);
+    } catch (e) {
+      box.innerHTML = `<div class="small" style="color:var(--bad)">Couldn't load a frame of this clip: ${esc(e?.message || String(e))}</div>`;
+      return;
+    }
+    let r = { ...(setting.mode === 'manual' && setting.box ? setting.box : s.cam?.cam || setting.last?.cam || { x: 0.02, y: 0.6, w: 0.24, h: 0.32 }) };
+    const url = URL.createObjectURL(still);
+    box.dataset.ready = '1';
+    box.innerHTML = `
+      <div class="small muted">Drag the box around <b>${esc(clip.streamer)}'s webcam</b> (move it, pull the corner, or draw a new one). It goes on top of the clip, above the gameplay.</div>
+      <div class="cam-stage"><img alt="Frame of the clip" draggable="false"><div class="cam-rect"><span class="cam-handle"></span></div></div>
+      <div class="row wrap">
+        <button class="btn sm primary cam-save">${icon('check')}Use for ${esc(clip.streamer)} and re-render</button>
+        <button class="btn sm ghost cam-auto" title="Find the cam automatically in every clip">${icon('refresh')}Auto-detect</button>
+        <button class="btn sm ghost cam-off" title="This streamer has no webcam: use the full frame">No cam</button>
+        <span class="small muted">Now: ${{ manual: 'set by you', off: 'no cam', auto: 'auto-detect' }[setting.mode]}</span>
+      </div>`;
+    const stage = box.querySelector('.cam-stage');
+    const rectEl = box.querySelector('.cam-rect');
+    box.querySelector('img').src = url;
+    const draw = () => Object.assign(rectEl.style, { left: `${r.x * 100}%`, top: `${r.y * 100}%`, width: `${r.w * 100}%`, height: `${r.h * 100}%` });
+    draw();
+    const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
+    stage.onpointerdown = (e) => {
+      e.preventDefault();
+      const b = stage.getBoundingClientRect();
+      const pt = (ev) => ({ x: clamp((ev.clientX - b.left) / b.width, 0, 1), y: clamp((ev.clientY - b.top) / b.height, 0, 1) });
+      const p0 = pt(e);
+      const start = { ...r };
+      const mode = e.target.classList.contains('cam-handle') ? 'resize' : e.target === rectEl ? 'move' : 'draw';
+      stage.setPointerCapture(e.pointerId);
+      stage.onpointermove = (ev) => {
+        const p = pt(ev);
+        if (mode === 'move') {
+          r.x = clamp(start.x + p.x - p0.x, 0, 1 - start.w);
+          r.y = clamp(start.y + p.y - p0.y, 0, 1 - start.h);
+        } else if (mode === 'resize') {
+          r.w = clamp(p.x - start.x, 0.03, 1 - start.x);
+          r.h = clamp(p.y - start.y, 0.03, 1 - start.y);
+        } else {
+          r = { x: Math.min(p0.x, p.x), y: Math.min(p0.y, p.y), w: Math.abs(p.x - p0.x), h: Math.abs(p.y - p0.y) };
+        }
+        draw();
+      };
+      stage.onpointerup = () => {
+        stage.onpointermove = null;
+        if (r.w < 0.03 || r.h < 0.03) r = start;
+        draw();
+      };
+    };
+    const finish = async (body, msg) => {
+      try {
+        await saveCamSetting(clip.streamer, body);
+        toast(msg, 'ok');
+        URL.revokeObjectURL(url);
+        box.classList.add('hidden');
+        delete box.dataset.ready;
+        onSaved();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+    box.querySelector('.cam-save').onclick = () => finish({ mode: 'manual', box: r }, `Streamer cam saved for ${clip.streamer}`);
+    box.querySelector('.cam-auto').onclick = () => finish({ mode: 'auto' }, `${clip.streamer}: the cam is found automatically`);
+    box.querySelector('.cam-off').onclick = () => finish({ mode: 'off' }, `${clip.streamer}: clips use the full frame`);
   }
 
   // Add captions + auto subtitles to every clip that doesn't have subtitles yet.
@@ -321,6 +409,7 @@ export class ClipLibrary {
     const back = document.createElement('div');
     back.className = 'modal-back';
     const v = clip.viral || {};
+    const s0 = v.source || {};
     back.innerHTML = `
       <div class="modal">
         <div class="video-col"><video controls playsinline src="${clip.videoUrl}" poster="${clip.thumbUrl || ''}"></video></div>
@@ -339,7 +428,13 @@ export class ClipLibrary {
           <label class="field">Hashtags<input type="text" class="f-tags"></label>
           <div class="row"><button class="btn sm save">${icon('save')}Save details</button><button class="btn sm copy">${icon('copy')}Copy post text</button></div>
           <label class="field">On-video caption ${clip.hasSource ? '' : '(source not kept — cannot re-render)'}
-            <div class="row"><input type="text" class="f-caption" maxlength="80"><label class="row small"><input type="checkbox" class="f-chat" checked> chat bubble</label></div></label>
+            <input type="text" class="f-caption" maxlength="80"></label>
+          <div class="field">Layout
+            <div class="row wrap"><select class="f-layout" style="width:auto">
+              <option value="facecam">Streamer cam + gameplay</option><option value="blur">Full frame + blurred background</option><option value="crop">Center crop (fill)</option></select>
+              <button class="btn sm ghost set-cam" ${clip.hasSource ? '' : 'disabled'} title="Show where ${esc(clip.streamer)}'s webcam is, for this and future clips">${icon('eye')}Set streamer cam</button></div>
+            <span class="small muted cam-info">${esc(s0.layout === 'facecam' ? describePlan(s0.cam) : '')}</span>
+            <div class="cam-picker hidden"></div></div>
           <label class="field">Subtitles (<code>start-end | text</code> per line — leave empty to auto-transcribe on re-render)
             <textarea class="f-subs" rows="5" style="font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea></label>
           <div class="row"><button class="btn sm rerender" ${clip.hasSource ? '' : 'disabled'}>${icon('film')}Re-render with captions</button><label class="row small"><input type="checkbox" class="f-subs-on" checked> subtitles</label><span class="rr-status muted small"></span></div>
@@ -362,6 +457,8 @@ export class ClipLibrary {
     $('.f-tags').value = clip.hashtags.join(' ');
     $('.f-caption').value = clip.caption;
     $('.f-subs').value = phrasesToText(v.subtitles);
+    $('.f-layout').value = s0.layout || 'blur';
+    $('.set-cam').onclick = () => this.camPicker(clip, $('.cam-picker'), () => { $('.f-layout').value = 'facecam'; $('.rerender').click(); });
 
     const close = () => { back.remove(); this.load(); };
     $('.close').onclick = close;
@@ -396,12 +493,13 @@ export class ClipLibrary {
       try {
         await this.rerender(clip, {
           caption: $('.f-caption').value.trim(),
-          chat: $('.f-chat').checked,
           subtitles: $('.f-subs-on').checked ? textToPhrases($('.f-subs').value) : [],
           autoTranscribe: $('.f-subs-on').checked,
+          layout: $('.f-layout').value,
           onStatus: (t) => { status.textContent = t; },
         });
         Object.assign(v, clip.viral);
+        $('.cam-info').textContent = v.source?.layout === 'facecam' ? describePlan(v.source.cam) : '';
         $('.f-subs').value = phrasesToText(v.subtitles);
         video.src = `${clip.videoUrl}?t=${Date.now()}`;
         status.textContent = 'Done';

@@ -135,6 +135,21 @@ if (db.prepare('PRAGMA user_version').get().user_version < 1) {
            PRAGMA user_version = 1;`);
 }
 const postCols = new Set(db.prepare('PRAGMA table_info(posts)').all().map((c) => c.name));
+// v1.17: clips show the streamer's cam above the gameplay by default. "Full frame + blur" was the old default and
+// was saved with every settings form, so move those accounts to the new layout once; Settings can switch it back.
+if (db.prepare('PRAGMA user_version').get().user_version < 2) {
+  db.exec(`UPDATE users SET settings = json_set(settings, '$.layout', 'facecam') WHERE json_valid(settings) AND json_extract(settings, '$.layout') = 'blur';
+           PRAGMA user_version = 2;`);
+}
+// Where each streamer's webcam is in their stream, per user: mode auto (detected per clip, last result kept as a
+// fallback), manual (a rectangle the user set) or off (no cam layout for this streamer).
+db.exec(`CREATE TABLE IF NOT EXISTS streamer_cams (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  login TEXT NOT NULL,
+  data TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, login)
+)`);
 // Set when the user marks a clip as published by hand: it leaves the auto-post queue and is deleted after a day.
 if (!new Set(db.prepare('PRAGMA table_info(clips)').all().map((c) => c.name)).has('published_at')) db.exec('ALTER TABLE clips ADD COLUMN published_at INTEGER');
 if (!postCols.has('step')) db.exec('ALTER TABLE posts ADD COLUMN step TEXT');
@@ -220,10 +235,10 @@ export const DEFAULT_SETTINGS = {
   preRollSec: 20,
   postRollSec: 10,
   reactionDelaySec: 3,
-  captions: true,              // burn hook headline + chat bubble into every clip
+  captions: true,              // burn the hook headline into every clip
   subtitles: true,             // burn spoken-word subtitles (in-browser speech-to-text) into every clip
   subtitleLanguage: '',        // '' = auto-detect, or a Whisper language code like 'en'
-  layout: 'blur',              // blur | crop
+  layout: 'facecam',           // facecam (streamer cam above the gameplay, auto-detected) | blur | crop
   resolution: '720x1280',
   keepSource: true,
   processing: 'browser',       // browser | server  (where watching + clipping runs)
@@ -235,7 +250,7 @@ export const DEFAULT_SETTINGS = {
 };
 
 const ENUMS = {
-  mode: ['background', 'foreground'], windowLayout: ['per-streamer', 'grid'], layout: ['blur', 'crop'],
+  mode: ['background', 'foreground'], windowLayout: ['per-streamer', 'grid'], layout: ['facecam', 'blur', 'crop'],
   resolution: ['720x1280', '1080x1920', '540x960'], processing: ['browser', 'server'],
   publishView: ['background', 'foreground'], youtubeVisibility: ['public', 'unlisted', 'private'], tiktokPrivacy: ['everyone', 'friends', 'only_me'],
   youtubeVia: ['auto', 'extension', 'server'],

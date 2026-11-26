@@ -8,6 +8,7 @@ const STATUS_LABEL = {
 const STAGE_LABEL = {
   capturing: `${icon('record', 'rec')}Capturing`, queued: `${icon('clock')}Queued on server`, transcribing: `${icon('captions')}Transcribing speech`,
   rendering: `${icon('film')}Rendering 9:16`, uploading: `${icon('upload')}Saving`, done: `${icon('check-circle', 'ok')}Saved`, failed: `${icon('alert', 'bad')}Failed`,
+  'finding the streamer cam': `${icon('eye')}Finding the streamer cam`,
 };
 
 function drawSpark(canvas, rates = [], heat = 0) {

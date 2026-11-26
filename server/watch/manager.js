@@ -14,6 +14,26 @@ import { HypeAnalyzer } from '../../public/js/engine/analyzer.js';
 import { buildMetadata } from '../../public/js/engine/meta.js';
 import { renderServer, extractAudioServer, ffmpegAvailable } from './render.js';
 import { transcribeServer } from './transcribe.js';
+import { detectCamServer } from './facecam.js';
+import { getCam, updateCam } from '../cams.js';
+import { needsDetection, resolvePlan, describePlan } from '../../public/js/engine/facecam.js';
+
+/** The streamer-cam plan for a clip: the streamer's saved setting, else a detection on this clip's frames. */
+export async function planCam(userId, login, input, offsetSec, durationSec, note = () => {}) {
+  const stored = getCam(userId, login);
+  let detected = null;
+  if (needsDetection(stored)) {
+    try {
+      detected = await detectCamServer(input, offsetSec, durationSec);
+      if (detected.type !== 'none') updateCam(userId, login, { detected });
+    } catch (e) {
+      note(`Streamer cam detection failed: ${e.message}`);
+    }
+  }
+  const plan = resolvePlan(stored, detected);
+  note(describePlan(plan));
+  return plan;
+}
 
 const MAX_PER_USER = Number(process.env.MAX_SERVER_STREAMERS || 10);
 const MAX_TOTAL = Number(process.env.MAX_SERVER_WATCHERS || 50);
@@ -190,16 +210,21 @@ class ServerWatcher {
           this.note(`Subtitles skipped: ${e.message}`);
         }
       }
+      let cam = null;
+      if (s.layout === 'facecam') {
+        state.stage = 'finding the streamer cam';
+        cam = await planCam(this.userId, this.login, input, data.offsetSec, data.durationSec, (m) => this.note(m));
+      }
       state.stage = 'rendering';
       const out = await renderServer({
-        dir, input, offsetSec: data.offsetSec, durationSec: data.durationSec, login: this.login,
-        layout: s.layout, resolution: s.resolution, captions: s.captions,
-        caption: meta.caption, chatLine: meta.viral.chatLine, subtitles, thumbAt: moment.viralOffset,
+        dir, input, offsetSec: data.offsetSec, durationSec: data.durationSec,
+        layout: s.layout, cam, resolution: s.resolution, captions: s.captions,
+        caption: meta.caption, subtitles, thumbAt: moment.viralOffset,
       });
       state.stage = 'uploading';
       meta.viral.subtitles = subtitles;
       meta.viral.offsetInClip = +Math.min(data.durationSec, moment.viralOffset).toFixed(1);
-      meta.viral.source = { offset: data.offsetSec, duration: data.durationSec, ext: data.ext, layout: s.layout, resolution: s.resolution };
+      meta.viral.source = { offset: data.offsetSec, duration: data.durationSec, ext: data.ext, layout: s.layout, resolution: s.resolution, cam, rendered: out.layout };
       meta.viral.processedOn = 'server';
       const { sanitizeMeta, insertClip } = await import('../store.js');
       const row = insertClip(this.userId, sanitizeMeta({ ...meta, streamer: this.login, duration: out.duration, width: out.width, height: out.height, sourceExt: data.ext }),

@@ -2,6 +2,8 @@
 // Twitch segments, reframe to 9:16 (Shorts / TikTok / Reels) and burn in captions.
 // A fresh ffmpeg instance is used per job: ffmpeg.wasm can trap on a second exec() after a
 // heavy encode, and loading a cached instance only takes ~0.5s.
+import { camGeometry, camFilter, camAnchors, ANALYSIS_W, ANALYSIS_H, SAMPLE_FRAMES } from './facecam.js';
+
 const CORE = () => ({
   coreURL: `${location.origin}/vendor/ffmpeg-core/ffmpeg-core.js`,
   wasmURL: `${location.origin}/vendor/ffmpeg-core/ffmpeg-core.wasm`,
@@ -63,31 +65,30 @@ function wrap(ctx, text, maxWidth) {
   return lines.slice(0, 3);
 }
 
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
 // Vertical layout anchors (720x1280 reference, scaled by u):
-// hook headline on top, video in the middle, spoken subtitles under the video, chat bubble below.
-export function anchors(W, H, layout) {
+// hook headline on top, video in the middle, spoken subtitles under the video.
+// `geo` is the streamer-cam geometry (camGeometry) when the cam layout is used.
+export function anchors(W, H, layout, geo = null) {
   const u = W / 720;
-  if (layout === 'crop') {
-    return { u, hookY: H * 0.17, watermarkY: H * 0.69, subY: H * 0.62, chatY: H * 0.76 };
+  if (geo?.type === 'cam') return camAnchors(W, H, geo);
+  if (layout === 'crop' || geo?.type === 'full') {
+    return { u, hookY: H * 0.17, subY: H * 0.62 };
   }
   const vh = W * 9 / 16, vt = (H - vh) / 2, vb = vt + vh;
-  return { u, hookY: H * 0.2, watermarkY: vt - 22 * u, subY: vb + 85 * u, chatY: vb + 200 * u };
+  return { u, hookY: H * 0.2, subY: vb + 85 * u };
 }
 
-export async function drawOverlay({ W, H, caption, chatLine, login, layout }) {
+/** The layout actually rendered: the cam layout needs a plan with a cam (or a full-frame streamer), else full frame. */
+export function resolveLayout(W, H, layout, cam) {
+  if (layout !== 'facecam') return { layout, geo: null };
+  const geo = camGeometry(W, H, cam);
+  return geo ? { layout: 'facecam', geo } : { layout: 'blur', geo: null };
+}
+
+export async function drawOverlay({ W, H, caption, layout, geo = null }) {
   const c = new OffscreenCanvas(W, H);
   const ctx = c.getContext('2d');
-  const { u, hookY, watermarkY, chatY } = anchors(W, H, layout);
+  const { u, hookY } = anchors(W, H, layout, geo);
   if (caption) {
     ctx.font = `900 ${Math.round(58 * u)}px "Arial Black", Impact, "Segoe UI Emoji", sans-serif`;
     ctx.textAlign = 'center';
@@ -103,27 +104,6 @@ export async function drawOverlay({ W, H, caption, chatLine, login, layout }) {
       ctx.fillStyle = i === lines.length - 1 && lines.length > 1 ? '#ffe14d' : '#fff';
       ctx.fillText(l, W / 2, top + i * lh);
     });
-  }
-  if (chatLine) {
-    const text = `💬 ${chatLine}`.slice(0, 48);
-    ctx.font = `700 ${Math.round(34 * u)}px "Segoe UI", Arial, "Segoe UI Emoji", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const tw = Math.min(ctx.measureText(text).width, W * 0.86);
-    ctx.fillStyle = 'rgba(145, 70, 255, 0.92)';
-    roundRect(ctx, W / 2 - tw / 2 - 26 * u, chatY - 34 * u, tw + 52 * u, 68 * u, 34 * u);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.fillText(text, W / 2, chatY, W * 0.86);
-  }
-  if (login) {
-    ctx.font = `600 ${Math.round(24 * u)}px "Segoe UI", Arial, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.shadowColor = 'rgba(0,0,0,0.8)';
-    ctx.shadowBlur = 6 * u;
-    ctx.fillText(`twitch.tv/${login}`, W / 2, watermarkY);
   }
   const blob = await c.convertToBlob({ type: 'image/png' });
   return new Uint8Array(await blob.arrayBuffer());
@@ -154,9 +134,9 @@ export async function drawSubtitle({ W, text }) {
   return { png: new Uint8Array(await blob.arrayBuffer()), height: h };
 }
 
-function filterGraph({ W, H, layout, withOverlay, subs = [] }) {
+function filterGraph({ W, H, layout, geo, withOverlay, subs = [] }) {
   const bw = Math.round(W / 8 / 2) * 2, bh = Math.round(H / 8 / 2) * 2;
-  const parts = [layout === 'crop'
+  const parts = [geo ? camFilter(W, H, geo) : layout === 'crop'
     ? `[0:v]fps=30,scale=-2:${H},crop=${W}:${H},setsar=1[l0]`
     : `[0:v]fps=30,split=2[a][b];` +
       `[a]scale=${bw}:${bh}:force_original_aspect_ratio=increase,crop=${bw}:${bh},boxblur=8:2,scale=${W}:${H},eq=brightness=-0.12:saturation=1.2,setsar=1[bg];` +
@@ -203,19 +183,20 @@ export function extractAudio({ bytes, ext = 'ts', offsetSec = 0, durationSec = 3
   return run;
 }
 
-async function doRender({ bytes, ext = 'ts', offsetSec = 0, durationSec = 30, caption = '', chatLine = '', login = '',
-  layout = 'blur', resolution = '720x1280', captions = true, subtitles = [], thumbAt = 20, onProgress }) {
+async function doRender({ bytes, ext = 'ts', offsetSec = 0, durationSec = 30, caption = '',
+  layout: wanted = 'blur', cam = null, resolution = '720x1280', captions = true, subtitles = [], thumbAt = 20, onProgress }) {
   const [W, H] = String(resolution).split('x').map(Number);
+  const { layout, geo } = resolveLayout(W, H, wanted, cam);
   const logTail = [];
   const ff = await createFFmpeg(
     (m) => { logTail.push(m); if (logTail.length > 30) logTail.shift(); },
     ({ time }) => onProgress?.(Math.min(1, Math.max(0, time / 1e6 / durationSec))),
   );
-  const withOverlay = captions && Boolean(caption || chatLine || login);
+  const withOverlay = captions && Boolean(caption);
   try {
     await ff.writeFile(`in.${ext}`, bytes);
-    if (withOverlay) await ff.writeFile('ov.png', await drawOverlay({ W, H, caption, chatLine, login, layout }));
-    const { subY } = anchors(W, H, layout);
+    if (withOverlay) await ff.writeFile('ov.png', await drawOverlay({ W, H, caption, layout, geo }));
+    const { subY } = anchors(W, H, layout, geo);
     const subs = [];
     for (const [i, s] of (subtitles || []).slice(0, 60).entries()) {
       if (!(s.end > s.start) || !s.text) continue;
@@ -228,7 +209,7 @@ async function doRender({ bytes, ext = 'ts', offsetSec = 0, durationSec = 30, ca
       ...(withOverlay ? ['-i', 'ov.png'] : []),
       ...subs.flatMap((s) => ['-i', s.file]),
       '-t', durationSec.toFixed(3),
-      '-filter_complex', filterGraph({ W, H, layout, withOverlay, subs }),
+      '-filter_complex', filterGraph({ W, H, layout, geo, withOverlay, subs }),
       '-map', '[v]', '-map', '0:a:0?',
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '24', '-profile:v', 'high', '-r', '30', '-g', '60',
       '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
@@ -238,8 +219,54 @@ async function doRender({ bytes, ext = 'ts', offsetSec = 0, durationSec = 30, ca
     if (code !== 0) throw new Error(`ffmpeg failed (${code}): ${logTail.slice(-4).join(' | ')}`);
     const video = new Blob([await ff.readFile('out.mp4')], { type: 'video/mp4' });
     const thumb = await snapshot(video, thumbAt);
-    return { video, thumb, width: W, height: H, duration: durationSec };
+    return { video, thumb, width: W, height: H, duration: durationSec, layout };
   } finally {
     ff.terminate();
   }
+}
+
+/** RGB frames (analysis size) spread over the clip, for streamer-cam detection. */
+export function sampleFrames({ bytes, ext = 'ts', offsetSec = 0, durationSec = 30, n = SAMPLE_FRAMES }) {
+  const run = queue.then(async () => {
+    const ff = await createFFmpeg(() => {}, () => {});
+    try {
+      await ff.writeFile(`in.${ext}`, bytes.slice()); // writeFile hands the buffer over to ffmpeg's worker
+      const span = Math.max(1, durationSec - 1).toFixed(2);
+      const code = await ff.exec(['-ss', (offsetSec + 0.5).toFixed(3), '-i', `in.${ext}`, '-t', span,
+        '-vf', `fps=${n}/${span},scale=${ANALYSIS_W}:${ANALYSIS_H}`, '-frames:v', String(n), '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'frames.rgb']);
+      if (code !== 0) throw new Error('Could not read video frames');
+      const d = await ff.readFile('frames.rgb');
+      const size = ANALYSIS_W * ANALYSIS_H * 3;
+      const frames = [];
+      for (let i = 0; i + size <= d.byteLength; i += size) frames.push({ data: d.slice(i, i + size), width: ANALYSIS_W, height: ANALYSIS_H, channels: 3 });
+      return frames;
+    } finally {
+      ff.terminate();
+    }
+  });
+  queue = run.catch(() => {});
+  track(run);
+  return run;
+}
+
+/** One full-size still (JPEG blob) of the source at `atSec` into the clip, for picking the cam by hand. */
+export function sourceStill({ bytes, ext = 'ts', offsetSec = 0, atSec = 0 }) {
+  const run = queue.then(async () => {
+    const ff = await createFFmpeg(() => {}, () => {});
+    try {
+      await ff.writeFile(`in.${ext}`, bytes.slice());
+      // Raw pixels, made into a JPEG by the browser (ffmpeg.wasm's JPEG encoder can trap).
+      const code = await ff.exec(['-ss', (offsetSec + atSec).toFixed(3), '-i', `in.${ext}`, '-frames:v', '1', '-vf', 'scale=1280:720', '-pix_fmt', 'rgba', '-f', 'rawvideo', 'still.rgba']);
+      if (code !== 0) throw new Error('Could not read a frame of the source');
+      const px = await ff.readFile('still.rgba');
+      if (px.byteLength < 1280 * 720 * 4) throw new Error('Could not read a frame of the source');
+      const c = new OffscreenCanvas(1280, 720);
+      c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer, px.byteOffset, 1280 * 720 * 4), 1280, 720), 0, 0);
+      return await c.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+    } finally {
+      ff.terminate();
+    }
+  });
+  queue = run.catch(() => {});
+  return run;
 }

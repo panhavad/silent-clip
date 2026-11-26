@@ -19,6 +19,7 @@ import { router as backup } from './backup.js';
 import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
 import { sanitizeMeta, insertClip, enforceStorageLimit, removeClip, storageUsage, PUBLISHED_TTL_MS, startClipJanitor } from './store.js';
 import { buildInfo } from './version.js';
+import { getCam, updateCam } from './cams.js';
 import { assetsVersion, sendPage, versionedAssets, htmlPages } from './assets.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -183,6 +184,21 @@ app.delete('/api/streamers/:id', (req, res) => {
 
 app.get('/api/twitch/master/:login', masterPlaylist);
 
+// ---------- streamer cam position (for the "streamer cam + gameplay" layout) ----------
+app.get('/api/cams/:login', (req, res) => {
+  const login = parseTwitchLogin(req.params.login);
+  if (!login) return res.status(400).json({ error: 'Invalid channel name' });
+  res.json(getCam(req.user.id, login));
+});
+// { mode: 'manual', box } sets a rectangle, { mode: 'auto' | 'off' } switches; { detected: plan } records a detection.
+app.put('/api/cams/:login', (req, res) => {
+  const login = parseTwitchLogin(req.params.login);
+  if (!login) return res.status(400).json({ error: 'Invalid channel name' });
+  const out = updateCam(req.user.id, login, req.body || {});
+  if (out.error) return res.status(400).json(out);
+  res.json(out);
+});
+
 // ---------- clips ----------
 const TMP_DIR = path.join(DATA_DIR, 'tmp');
 fs.mkdirSync(TMP_DIR, { recursive: true });
@@ -310,6 +326,14 @@ app.put('/api/clips/:id/video', clipFiles, (req, res) => {
         : [];
     }
     if (req.body.transcript !== undefined) viral.transcript = String(req.body.transcript).slice(0, 5000);
+    // Layout (and streamer-cam plan) the re-render used, so later re-renders and the editor know it.
+    if (req.body.source !== undefined) {
+      const src = json(req.body.source, {});
+      viral.source = { ...(viral.source || {}) };
+      if (['facecam', 'blur', 'crop'].includes(src.layout)) viral.source.layout = src.layout;
+      if (['facecam', 'blur', 'crop'].includes(src.rendered)) viral.source.rendered = src.rendered;
+      if ('cam' in src) viral.source.cam = src.cam && typeof src.cam === 'object' ? src.cam : null;
+    }
     db.prepare('UPDATE clips SET size = ?, thumb_file = ?, caption = ?, viral = ? WHERE id = ?').run(size, thumb, caption, JSON.stringify(viral), r.id);
     // A re-render can grow the clip, so the storage limit applies here too.
     enforceStorageLimit(req.user.id, r.id);

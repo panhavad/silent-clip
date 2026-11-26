@@ -1,6 +1,8 @@
 import { buildMetadata } from './meta.js';
 import { renderClip } from './render.js';
 import { autoSubtitles } from './transcribe.js';
+import { planCam } from './cam.js';
+import { describePlan } from './facecam.js';
 
 const WORKER_URL = new URL('./watcher.worker.js', import.meta.url);
 
@@ -162,16 +164,25 @@ export class WatcherManager extends EventTarget {
         this.#changed(login);
       }
       meta.viral.subtitles = subtitles;
+      let cam = null;
+      if (s.layout === 'facecam') {
+        job.stage = 'finding the streamer cam';
+        this.#changed(login);
+        cam = await planCam(login, { bytes, ext, offsetSec, durationSec }, { log: (m) => this.log(login, m) });
+        this.log(login, describePlan(cam));
+        job.stage = 'rendering';
+        this.#changed(login);
+      }
       const out = await renderClip({
-        bytes, ext, offsetSec, durationSec, login, layout: s.layout, resolution: s.resolution,
-        captions: s.captions, caption: s.captions ? meta.caption : '', chatLine: s.captions ? meta.viral.chatLine : '',
+        bytes, ext, offsetSec, durationSec, layout: s.layout, cam, resolution: s.resolution,
+        captions: s.captions, caption: s.captions ? meta.caption : '',
         subtitles, thumbAt: msg.moment.viralOffset,
         onProgress: (p) => { job.progress = p; this.#emit('job', { login, job }); },
       });
       job.stage = 'uploading';
       this.#changed(login);
       meta.viral.offsetInClip = +Math.min(durationSec, msg.moment.viralOffset).toFixed(1);
-      meta.viral.source = { offset: offsetSec, duration: durationSec, ext, layout: s.layout, resolution: s.resolution };
+      meta.viral.source = { offset: offsetSec, duration: durationSec, ext, layout: s.layout, resolution: s.resolution, cam, rendered: out.layout };
       const form = new FormData();
       form.append('meta', JSON.stringify({ ...meta, streamer: login, duration: out.duration, width: out.width, height: out.height, sourceExt: ext }));
       form.append('video', out.video, 'clip.mp4');

@@ -102,3 +102,57 @@ test('server captions strip emoji and wrap into short centred lines', async () =
   assert.deepEqual(wrap('NOBODY EXPECTED THIS TO HAPPEN LIVE', 17, 3), ['NOBODY EXPECTED', 'THIS TO HAPPEN', 'LIVE']);
   assert.deepEqual(wrap('ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE', 10, 2), ['ONE TWO', 'THREE FOUR']);
 });
+
+test('streamer cam: a face that stays put is the webcam, snapped to its overlay border; big faces get a follow crop', async () => {
+  const { planFromFaces, decodeFaces, camGeometry, camFilter, resolvePlan, needsDetection, ANALYSIS_W: W, ANALYSIS_H: H } = await import('../public/js/engine/facecam.js');
+  const face = (x, y, w, h, score = 0.99) => ({ x: x / W, y: y / H, w: w / W, h: h / H, score });
+  // Six frames: moving "gameplay" noise outside, a still room (with a shelf edge) inside a webcam at x 470-630, y 20-150.
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const frames = Array.from({ length: 6 }, () => {
+    const data = new Uint8Array(W * H * 3);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const inCam = x >= 470 && x < 630 && y >= 20 && y < 150;
+        const v = inCam ? (x < 500 ? 120 : 190) : Math.floor(rnd() * 60);
+        data.set([v, v, v], (y * W + x) * 3);
+      }
+    }
+    return { data, width: W, height: H, channels: 3 };
+  });
+  const faces = frames.map((_, i) => [
+    face(540 + (i % 2) * 2, 50, 22, 30), // the streamer, moving a little
+    ...(i % 3 ? [] : [face(100 + i * 50, 220, 20, 26, 0.8)]), // a face flashing by in the game
+  ]);
+  const plan = planFromFaces({ frames, faces });
+  assert.equal(plan.type, 'cam');
+  const near = (a, b) => Math.abs(a - b) < 0.012;
+  assert.ok(near(plan.cam.x, 470 / W) && near(plan.cam.x + plan.cam.w, 630 / W), `snapped to the overlay's sides, not the shelf: ${JSON.stringify(plan.cam)}`);
+  assert.ok(near(plan.cam.y, 20 / H) && near(plan.cam.y + plan.cam.h, 150 / H), `snapped to its top and bottom: ${JSON.stringify(plan.cam)}`);
+
+  assert.equal(planFromFaces({ frames, faces: frames.map(() => []) }).type, 'none');
+  assert.equal(planFromFaces({ frames, faces: frames.map((_, i) => (i ? [] : [face(540, 50, 22, 30)])) }).type, 'none', 'a face in one frame only is not the streamer');
+  const irl = planFromFaces({ frames: [], faces: [0, 1, 2].map(() => [face(280, 60, 60, 90)]) });
+  assert.deepEqual([irl.type, irl.focusX], ['full', 0.4844], 'a big face (IRL / Just Chatting) gets a vertical crop that follows it');
+
+  // The model's output (4:3, letterboxed) maps back to frame coordinates, overlapping boxes merged.
+  const dec = decodeFaces([0.1, 0.9, 0.2, 0.8, 0.9, 0.1], [0.5, (60 + 0.25 * 360) / 480, 0.6, (60 + 0.5 * 360) / 480, 0.51, (60 + 0.26 * 360) / 480, 0.6, (60 + 0.5 * 360) / 480, 0, 0, 1, 1]);
+  assert.equal(dec.length, 1);
+  assert.ok(near(dec[0].y, 0.25) && near(dec[0].h, 0.25) && near(dec[0].x, 0.5));
+  // Layout: the cam panel on top, the gameplay below, filling the 9:16 frame exactly.
+  const geo = camGeometry(720, 1280, plan);
+  assert.equal(geo.camH + geo.gameH, 1280);
+  assert.ok(geo.camH >= 384 && geo.camH <= 576 && geo.camH % 2 === 0);
+  assert.ok(geo.cam.x >= plan.cam.x - 1e-4 && geo.cam.x + geo.cam.w <= plan.cam.x + plan.cam.w + 1e-4, 'the cam panel only shows the cam');
+  assert.ok(Math.abs((geo.cam.w * 16 / 9) / geo.cam.h - 720 / geo.camH) < 0.01, 'cam crop matches the panel shape');
+  assert.ok(Math.abs((geo.game.w * 16 / 9) - 720 / geo.gameH) < 0.01 && geo.game.h === 1, 'gameplay crop matches its panel, full height');
+  assert.match(camFilter(720, 1280, geo), /vstack=inputs=2/);
+  assert.equal(camGeometry(720, 1280, { type: 'none' }), null);
+
+  // The streamer's saved setting wins; a clip where they were off camera reuses the last good detection.
+  assert.equal(needsDetection({ mode: 'manual' }), false);
+  assert.equal(resolvePlan({ mode: 'manual', box: { x: 0, y: 0.7, w: 0.2, h: 0.3 } }, plan).manual, true);
+  assert.equal(resolvePlan({ mode: 'off' }, plan).type, 'none');
+  assert.equal(resolvePlan({ mode: 'auto', last: plan, lastAt: Date.now() }, { type: 'none' }).reused, true);
+  assert.equal(resolvePlan({ mode: 'auto', last: plan, lastAt: 1 }, { type: 'none' }).type, 'none', 'a very old detection is not reused');
+});
