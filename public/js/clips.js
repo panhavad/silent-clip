@@ -265,10 +265,11 @@ export class ClipLibrary {
    * Re-render a clip from its stored raw source (in the browser) with the hook caption and
    * subtitles. With `autoTranscribe` and no subtitles given, speech is transcribed first.
    */
-  async rerender(clip, { caption = clip.caption, subtitles = [], autoTranscribe = true, layout, onStatus = () => {} } = {}) {
+  async rerender(clip, { caption = clip.caption, subtitles = [], autoTranscribe = true, layout, camPosition, onStatus = () => {} } = {}) {
     const v = clip.viral || {};
     const s = v.source || {};
     layout ||= s.layout || 'blur';
+    camPosition ||= s.camPosition || 'top';
     onStatus('Loading source…');
     const res = await fetch(`/api/clips/${clip.id}/source`);
     if (!res.ok) throw new Error('Raw source was not kept for this clip');
@@ -287,7 +288,7 @@ export class ClipLibrary {
     const cam = layout === 'facecam' ? await planCam(clip.streamer, src, { known: s.cam, onStatus }) : null;
     const out = await renderClip({
       ...src, caption, subtitles,
-      layout, cam, resolution: s.resolution || '720x1280', captions: true, thumbAt: v.offsetInClip ?? 20,
+      layout, cam, camPosition, resolution: s.resolution || '720x1280', captions: true, thumbAt: v.offsetInClip ?? 20,
       onProgress: (p) => onStatus(`Rendering ${Math.round(p * 100)}%`),
     });
     onStatus('Saving…');
@@ -296,7 +297,7 @@ export class ClipLibrary {
     if (out.thumb) form.append('thumb', out.thumb, 'thumb.jpg');
     form.append('caption', caption);
     form.append('subtitles', JSON.stringify(subtitles));
-    form.append('source', JSON.stringify({ layout, cam, rendered: out.layout }));
+    form.append('source', JSON.stringify({ layout, cam, camPosition, rendered: out.layout }));
     if (transcript !== undefined) form.append('transcript', transcript);
     Object.assign(clip, await api(`/api/clips/${clip.id}/video`, { method: 'PUT', form }));
     return clip;
@@ -432,6 +433,7 @@ export class ClipLibrary {
           <div class="field">Layout
             <div class="row wrap"><select class="f-layout" style="width:auto">
               <option value="facecam">Streamer cam + gameplay</option><option value="blur">Full frame + blurred background</option><option value="crop">Center crop (fill)</option></select>
+              <select class="f-campos" style="width:auto" title="Where the streamer cam goes in the clip"><option value="top">Cam on top</option><option value="bottom">Cam at the bottom</option></select>
               <button class="btn sm ghost set-cam" ${clip.hasSource ? '' : 'disabled'} title="Show where ${esc(clip.streamer)}'s webcam is, for this and future clips">${icon('eye')}Set streamer cam</button></div>
             <span class="small muted cam-info">${esc(s0.layout === 'facecam' ? describePlan(s0.cam) : '')}</span>
             <div class="cam-picker hidden"></div></div>
@@ -458,6 +460,12 @@ export class ClipLibrary {
     $('.f-caption').value = clip.caption;
     $('.f-subs').value = phrasesToText(v.subtitles);
     $('.f-layout').value = s0.layout || 'blur';
+    $('.f-campos').value = s0.camPosition || 'top';
+    // Clips from before this option: start from the user's current setting.
+    if (!s0.camPosition) api('/api/me').then((me) => { $('.f-campos').value = me.settings.camPosition || 'top'; }).catch(() => {});
+    const showCamPos = () => $('.f-campos').classList.toggle('hidden', $('.f-layout').value !== 'facecam');
+    $('.f-layout').onchange = showCamPos;
+    showCamPos();
     $('.set-cam').onclick = () => this.camPicker(clip, $('.cam-picker'), () => { $('.f-layout').value = 'facecam'; $('.rerender').click(); });
 
     const close = () => { back.remove(); this.load(); };
@@ -496,6 +504,7 @@ export class ClipLibrary {
           subtitles: $('.f-subs-on').checked ? textToPhrases($('.f-subs').value) : [],
           autoTranscribe: $('.f-subs-on').checked,
           layout: $('.f-layout').value,
+          camPosition: $('.f-campos').value,
           onStatus: (t) => { status.textContent = t; },
         });
         Object.assign(v, clip.viral);

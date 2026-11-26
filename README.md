@@ -224,13 +224,15 @@ Users never need a hard refresh or a cache clear after a deploy:
 
 ### Settings
 
-Sensitivity (1–10), seconds before/after the viral point, chat reaction delay, cooldown, max clips/hour, layout (streamer cam + gameplay (default) / full frame + blur / center crop), output resolution (540p / 720p / 1080p), hook headline (on by default), auto subtitles (on by default) and subtitle language (auto = streamer's Twitch language), keep raw source (for re-rendering), run on browser or server, default mode, auto-start (off by default).
+Sensitivity (1–10), seconds before/after the viral point, chat reaction delay, cooldown, max clips/hour, layout (streamer cam + gameplay (default) / full frame + blur / center crop), streamer cam position (top (default) / bottom), output resolution (540p / 720p / 1080p), hook headline (on by default), auto subtitles (on by default) and subtitle language (auto = streamer's Twitch language), keep raw source (for re-rendering), run on browser or server, default mode, auto-start (off by default).
 
 ### Streamer cam + gameplay
 
 <img src="public/img/screenshots/streamer-cam.webp" alt="A rendered clip: the streamer's webcam on top, the Fortnite gameplay below, with the headline and subtitles" width="270" align="right">
 
 Clips are only worth watching with the streamer's reaction in them, so the default layout puts **the streamer's webcam on top and the gameplay below**, filling the 9:16 frame. The headline sits on the seam and the subtitles sit over the gameplay.
+
+- **Top or bottom.** **Settings → Streamer cam position** puts the cam above the gameplay (default) or below it. With the cam at the bottom, the headline moves to the top of the frame and the subtitles sit just above the cam. Each clip's details can also switch it for a re-render (**Cam on top / Cam at the bottom**).
 
 - **Found automatically for every clip.** A few frames across the clip go through a small face detector (UltraFace, 1.5 MB, bundled in `public/models`, about a second per clip in the browser or on the server). The streamer's face is the one that stays in place across the frames (players in third-person games move and are seen from behind). The webcam rectangle is then snapped to the overlay's border: a straight edge present in every frame, with the still room on the inside and moving gameplay outside.
 - **IRL / Just Chatting**: when the streamer fills the picture, the clip is a vertical crop that follows them.

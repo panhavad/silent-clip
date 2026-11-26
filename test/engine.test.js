@@ -146,7 +146,14 @@ test('streamer cam: a face that stays put is the webcam, snapped to its overlay 
   assert.ok(geo.cam.x >= plan.cam.x - 1e-4 && geo.cam.x + geo.cam.w <= plan.cam.x + plan.cam.w + 1e-4, 'the cam panel only shows the cam');
   assert.ok(Math.abs((geo.cam.w * 16 / 9) / geo.cam.h - 720 / geo.camH) < 0.01, 'cam crop matches the panel shape');
   assert.ok(Math.abs((geo.game.w * 16 / 9) - 720 / geo.gameH) < 0.01 && geo.game.h === 1, 'gameplay crop matches its panel, full height');
-  assert.match(camFilter(720, 1280, geo), /vstack=inputs=2/);
+  assert.match(camFilter(720, 1280, geo), /\[campanel\]\[gamepanel\]vstack=inputs=2/);
+  // Cam at the bottom: gameplay stacked first, the seam and the text move with it.
+  const low = camGeometry(720, 1280, plan, 'bottom');
+  assert.deepEqual([low.camH, low.gameH, low.camTop], [geo.camH, geo.gameH, false]);
+  assert.match(camFilter(720, 1280, low), new RegExp(`\\[gamepanel\\]\\[campanel\\]vstack=inputs=2,drawbox=x=0:y=${low.gameH - 2}:`));
+  const { camAnchors } = await import('../public/js/engine/facecam.js');
+  const a = camAnchors(720, 1280, low);
+  assert.ok(a.hookY < low.gameH && a.subY < low.gameH && a.subY > a.hookY, 'headline and subtitles stay on the gameplay, above the cam');
   assert.equal(camGeometry(720, 1280, { type: 'none' }), null);
 
   // The streamer's saved setting wins; a clip where they were off camera reuses the last good detection.

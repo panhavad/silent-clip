@@ -79,9 +79,9 @@ export function anchors(W, H, layout, geo = null) {
 }
 
 /** The layout actually rendered: the cam layout needs a plan with a cam (or a full-frame streamer), else full frame. */
-export function resolveLayout(W, H, layout, cam) {
+export function resolveLayout(W, H, layout, cam, camPosition = 'top') {
   if (layout !== 'facecam') return { layout, geo: null };
-  const geo = camGeometry(W, H, cam);
+  const geo = camGeometry(W, H, cam, camPosition);
   return geo ? { layout: 'facecam', geo } : { layout: 'blur', geo: null };
 }
 
@@ -184,9 +184,9 @@ export function extractAudio({ bytes, ext = 'ts', offsetSec = 0, durationSec = 3
 }
 
 async function doRender({ bytes, ext = 'ts', offsetSec = 0, durationSec = 30, caption = '',
-  layout: wanted = 'blur', cam = null, resolution = '720x1280', captions = true, subtitles = [], thumbAt = 20, onProgress }) {
+  layout: wanted = 'blur', cam = null, camPosition = 'top', resolution = '720x1280', captions = true, subtitles = [], thumbAt = 20, onProgress }) {
   const [W, H] = String(resolution).split('x').map(Number);
-  const { layout, geo } = resolveLayout(W, H, wanted, cam);
+  const { layout, geo } = resolveLayout(W, H, wanted, cam, camPosition);
   const logTail = [];
   const ff = await createFFmpeg(
     (m) => { logTail.push(m); if (logTail.length > 30) logTail.shift(); },

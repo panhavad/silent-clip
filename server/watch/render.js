@@ -45,9 +45,9 @@ export function wrap(text, maxChars, maxLines) {
 const fmt = (n) => Number(n).toFixed(2);
 
 export async function renderServer({ dir, input, offsetSec = 0, durationSec = 30, caption = '',
-  layout: wanted = 'blur', cam = null, resolution = '720x1280', captions = true, subtitles = [], thumbAt = 20 }) {
+  layout: wanted = 'blur', cam = null, camPosition = 'top', resolution = '720x1280', captions = true, subtitles = [], thumbAt = 20 }) {
   const [W, H] = String(resolution).split('x').map(Number);
-  const { layout, geo } = resolveLayout(W, H, wanted, cam);
+  const { layout, geo } = resolveLayout(W, H, wanted, cam, camPosition);
   const { u, hookY, subY } = anchors(W, H, layout, geo);
   let n = 0;
   const textFile = (text) => {

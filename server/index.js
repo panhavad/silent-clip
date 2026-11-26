@@ -333,6 +333,7 @@ app.put('/api/clips/:id/video', clipFiles, (req, res) => {
       if (['facecam', 'blur', 'crop'].includes(src.layout)) viral.source.layout = src.layout;
       if (['facecam', 'blur', 'crop'].includes(src.rendered)) viral.source.rendered = src.rendered;
       if ('cam' in src) viral.source.cam = src.cam && typeof src.cam === 'object' ? src.cam : null;
+      if (['top', 'bottom'].includes(src.camPosition)) viral.source.camPosition = src.camPosition;
     }
     db.prepare('UPDATE clips SET size = ?, thumb_file = ?, caption = ?, viral = ? WHERE id = ?').run(size, thumb, caption, JSON.stringify(viral), r.id);
     // A re-render can grow the clip, so the storage limit applies here too.

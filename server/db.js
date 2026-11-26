@@ -239,6 +239,7 @@ export const DEFAULT_SETTINGS = {
   subtitles: true,             // burn spoken-word subtitles (in-browser speech-to-text) into every clip
   subtitleLanguage: '',        // '' = auto-detect, or a Whisper language code like 'en'
   layout: 'facecam',           // facecam (streamer cam above the gameplay, auto-detected) | blur | crop
+  camPosition: 'top',          // facecam layout: streamer cam panel at the top | bottom of the clip
   resolution: '720x1280',
   keepSource: true,
   processing: 'browser',       // browser | server  (where watching + clipping runs)
@@ -250,7 +251,7 @@ export const DEFAULT_SETTINGS = {
 };
 
 const ENUMS = {
-  mode: ['background', 'foreground'], windowLayout: ['per-streamer', 'grid'], layout: ['facecam', 'blur', 'crop'],
+  mode: ['background', 'foreground'], windowLayout: ['per-streamer', 'grid'], layout: ['facecam', 'blur', 'crop'], camPosition: ['top', 'bottom'],
   resolution: ['720x1280', '1080x1920', '540x960'], processing: ['browser', 'server'],
   publishView: ['background', 'foreground'], youtubeVisibility: ['public', 'unlisted', 'private'], tiktokPrivacy: ['everyone', 'friends', 'only_me'],
   youtubeVia: ['auto', 'extension', 'server'],

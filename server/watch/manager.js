@@ -218,13 +218,13 @@ class ServerWatcher {
       state.stage = 'rendering';
       const out = await renderServer({
         dir, input, offsetSec: data.offsetSec, durationSec: data.durationSec,
-        layout: s.layout, cam, resolution: s.resolution, captions: s.captions,
+        layout: s.layout, cam, camPosition: s.camPosition, resolution: s.resolution, captions: s.captions,
         caption: meta.caption, subtitles, thumbAt: moment.viralOffset,
       });
       state.stage = 'uploading';
       meta.viral.subtitles = subtitles;
       meta.viral.offsetInClip = +Math.min(data.durationSec, moment.viralOffset).toFixed(1);
-      meta.viral.source = { offset: data.offsetSec, duration: data.durationSec, ext: data.ext, layout: s.layout, resolution: s.resolution, cam, rendered: out.layout };
+      meta.viral.source = { offset: data.offsetSec, duration: data.durationSec, ext: data.ext, layout: s.layout, resolution: s.resolution, cam, camPosition: s.camPosition, rendered: out.layout };
       meta.viral.processedOn = 'server';
       const { sanitizeMeta, insertClip } = await import('../store.js');
       const row = insertClip(this.userId, sanitizeMeta({ ...meta, streamer: this.login, duration: out.duration, width: out.width, height: out.height, sourceExt: data.ext }),

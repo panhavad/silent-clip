@@ -174,7 +174,7 @@ export class WatcherManager extends EventTarget {
         this.#changed(login);
       }
       const out = await renderClip({
-        bytes, ext, offsetSec, durationSec, layout: s.layout, cam, resolution: s.resolution,
+        bytes, ext, offsetSec, durationSec, layout: s.layout, cam, camPosition: s.camPosition, resolution: s.resolution,
         captions: s.captions, caption: s.captions ? meta.caption : '',
         subtitles, thumbAt: msg.moment.viralOffset,
         onProgress: (p) => { job.progress = p; this.#emit('job', { login, job }); },
@@ -182,7 +182,7 @@ export class WatcherManager extends EventTarget {
       job.stage = 'uploading';
       this.#changed(login);
       meta.viral.offsetInClip = +Math.min(durationSec, msg.moment.viralOffset).toFixed(1);
-      meta.viral.source = { offset: offsetSec, duration: durationSec, ext, layout: s.layout, resolution: s.resolution, cam, rendered: out.layout };
+      meta.viral.source = { offset: offsetSec, duration: durationSec, ext, layout: s.layout, resolution: s.resolution, cam, camPosition: s.camPosition, rendered: out.layout };
       const form = new FormData();
       form.append('meta', JSON.stringify({ ...meta, streamer: login, duration: out.duration, width: out.width, height: out.height, sourceExt: ext }));
       form.append('video', out.video, 'clip.mp4');

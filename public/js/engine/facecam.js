@@ -238,8 +238,11 @@ export function manualPlan(box) {
 }
 
 // ---------- geometry of the rendered frame ----------
-/** Where everything goes in a W x H vertical frame for this plan (source rects are normalized). */
-export function camGeometry(W, H, plan) {
+/**
+ * Where everything goes in a W x H vertical frame for this plan (source rects are normalized). `position` puts the
+ * streamer cam panel at the 'top' (default) or 'bottom' of the frame.
+ */
+export function camGeometry(W, H, plan, position = 'top') {
   if (plan?.type === 'full') {
     const cw = (W / H) / SRC_ASPECT;
     return { type: 'full', crop: { x: r4(clamp(plan.focusX - cw / 2, 0, 1 - cw)), y: 0, w: r4(cw), h: 1 } };
@@ -265,7 +268,7 @@ export function camGeometry(W, H, plan) {
   const gw = Math.min(1, (W / gameH) / SRC_ASPECT);
   const game = { x: (1 - gw) / 2, y: 0, w: gw, h: 1 };
   const n = (o) => ({ x: r4(o.x), y: r4(o.y), w: r4(o.w), h: r4(o.h) });
-  return { type: 'cam', camH, gameH, cam: n(cam), game: n(game) };
+  return { type: 'cam', camH, gameH, camTop: position !== 'bottom', cam: n(cam), game: n(game) };
 }
 
 /** ffmpeg filter (input [0:v]) that builds the base video [l0] for a cam/full plan. */
@@ -275,16 +278,23 @@ export function camFilter(W, H, geo, input = '[0:v]') {
     return `${input}fps=30,${crop(geo.crop)},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1[l0]`;
   }
   const line = Math.max(2, even(W / 180));
+  const camTop = geo.camTop !== false;
+  const seam = camTop ? geo.camH : geo.gameH;
   return `${input}fps=30,split=2[camsrc][gamesrc];`
     + `[camsrc]${crop(geo.cam)},scale=${W}:${geo.camH}:force_original_aspect_ratio=increase,crop=${W}:${geo.camH},setsar=1[campanel];`
     + `[gamesrc]${crop(geo.game)},scale=${W}:${geo.gameH}:force_original_aspect_ratio=increase,crop=${W}:${geo.gameH},setsar=1[gamepanel];`
-    + `[campanel][gamepanel]vstack=inputs=2,drawbox=x=0:y=${geo.camH - line / 2}:w=iw:h=${line}:color=black@0.85:t=fill[l0]`;
+    + `${camTop ? '[campanel][gamepanel]' : '[gamepanel][campanel]'}vstack=inputs=2,drawbox=x=0:y=${seam - line / 2}:w=iw:h=${line}:color=black@0.85:t=fill[l0]`;
 }
 
-/** Text positions for the cam layout (720x1280 reference, scaled by u): headline under the seam, etc. */
+/**
+ * Text positions for the cam layout (720x1280 reference, scaled by u). Both go over the gameplay: cam on top puts
+ * the headline under the seam and subtitles low; cam at the bottom puts the headline at the top and subtitles
+ * just above the seam.
+ */
 export function camAnchors(W, H, geo) {
   const u = W / 720;
   if (geo.type === 'full') return null;
+  if (geo.camTop === false) return { u, hookY: 120 * u, subY: geo.gameH - 110 * u };
   return { u, hookY: geo.camH + 95 * u, subY: geo.camH + geo.gameH * 0.7 };
 }
 
