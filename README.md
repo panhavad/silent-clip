@@ -262,6 +262,7 @@ Set these in `.env` (Docker Compose passes the common ones through; see `.env.ex
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` | – | Google sign-in (see above) |
 | `TWITCH_AUTH_TOKEN` | – | Turbo/subscriber OAuth token, so ad breaks don't replace the stream |
 | `MAX_SERVER_STREAMERS` / `MAX_SERVER_WATCHERS` | `10` / `50` | Server watching limits per user / in total |
+| `CLIP_WORKER_IDLE_SEC` | `300` | The clip worker process exits after this long without clips, giving its memory back |
 | `MAX_UPLOAD_MB` | `300` | Largest clip upload |
 | `PUBLISH_DRY_RUN` | `false` | `true` simulates posts (*Demo mode*); the extension stops before Publish |
 | `MAX_PUBLISH_BROWSERS` | `2` | Server browsers posting at the same time |
@@ -278,6 +279,7 @@ Set these in `.env` (Docker Compose passes the common ones through; see `.env.ex
 ## Notes & limitations
 
 - In **Browser** mode keep at least one app tab/window open while watching. In **Server** mode nothing needs to stay open; the server needs CPU for rendering (about 15-30 s per clip with native ffmpeg, plus transcription) and clips are processed one at a time. Limits: `MAX_SERVER_STREAMERS` per user (default 10) and `MAX_SERVER_WATCHERS` in total (default 50).
+- **Server clips are made in a separate worker process.** Speech-to-text, streamer-cam detection and rendering need roughly 700 MB plus ffmpeg (~270 MB) at their peak, while watching itself stays around 200 MB. The worker asks Linux to end it first when memory runs out, so on a small server only that clip is affected: watching, the chat baselines and the app keep running, the clip is retried once without subtitles (the speech model needs most of the memory), and the next clip starts a fresh worker. The worker exits after 5 idle minutes (`CLIP_WORKER_IDLE_SEC`). For subtitles on every server clip, give the server about 2 GB of RAM (plus ~300 MB per always-open YouTube browser).
 - Browser mode: Chrome/Edge (desktop) recommended. A 30 s 720p clip takes roughly 1.5–2 minutes (transcription + render) on a typical laptop.
 - During Twitch **ad breaks** anonymous viewers receive ads instead of the stream; those seconds can't be clipped. Setting `TWITCH_AUTH_TOKEN` to a Turbo/subscriber account's token avoids this.
 - Posting drives each platform's own web uploader (YouTube Studio, TikTok Studio, Instagram), so no developer app or API quota is involved. When a platform changes its page, a step can break; the failure screenshot (server posts) or the failed Studio tab left open (extension posts) shows where. Failed uploads are retried up to 3 times and shown in red on the calendar.
@@ -301,7 +303,7 @@ Project layout:
 ```
 server/            Express API, SQLite (node:sqlite), publisher + planner, admin, backups
 server/social/     server-browser posting: profiles, live viewer, YouTube / TikTok / Instagram drivers
-server/watch/      server-side watching and rendering ("Run on server")
+server/watch/      server-side watching and rendering ("Run on server"); clip-worker.js = the separate clip process
 server/extension.js  API for the Chrome extension (/api/ext) and /extension.zip
 public/            the web app (no build step); public/js/engine/ = watcher, analyzer, HLS, render, transcribe, streamer cam (facecam.js)
 public/models/     bundled UltraFace face detector for the streamer-cam layout (MIT, see its license file)

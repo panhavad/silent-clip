@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { HypeAnalyzer } from '../public/js/engine/analyzer.js';
 import { parseMedia, parseMaster, pickVariant } from '../public/js/engine/hls.js';
 import { parseIrc } from '../public/js/engine/chat.js';
@@ -242,5 +245,29 @@ test('watching keeps the learned chat baseline through video drops and short off
     assert.deepEqual([w.status, w.analyzer, chats[0].closed], ['offline', null, true]);
   } finally {
     w.stop();
+  }
+});
+
+test('clip work runs in a worker process: a worker killed mid-job fails only that job, and the next job gets a new worker', async () => {
+  const { createClipRunner, ClipWorkerCrash } = await import('../server/watch/clip-runner.js');
+  const prevFf = process.env.FFMPEG_PATH;
+  process.env.FFMPEG_PATH = 'ffmpeg-that-does-not-exist-for-tests';
+  const runner = createClipRunner({ idleMs: 300 });
+  try {
+    await assert.rejects(runner.run({ testCrash: true }), (e) => e instanceof ClipWorkerCrash && /ran out of memory/.test(e.message));
+    assert.equal(runner.running, false);
+    // A new worker takes the next job; this one fails normally (no ffmpeg here), not as a crash.
+    const stages = [];
+    await assert.rejects(
+      runner.run({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'sc-clipjob-')), input: 'missing.ts', offsetSec: 0, durationSec: 5, subtitles: false, layout: 'blur', resolution: '720x1280', captions: false, caption: '' }, { stage: (s) => stages.push(s) }),
+      (e) => !(e instanceof ClipWorkerCrash),
+    );
+    assert.deepEqual(stages, ['rendering'], 'progress is reported from the worker');
+    assert.equal(runner.running, true);
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.equal(runner.running, false, 'an idle worker exits to give its memory back');
+  } finally {
+    runner.stop();
+    if (prevFf === undefined) delete process.env.FFMPEG_PATH; else process.env.FFMPEG_PATH = prevFf;
   }
 });

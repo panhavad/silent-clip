@@ -10,28 +10,12 @@ import { fetchMaster } from '../twitch.js';
 import { getChannel } from '../../public/js/engine/twitch.js';
 import { StreamWatch } from '../../public/js/engine/pipeline.js';
 import { buildMetadata } from '../../public/js/engine/meta.js';
-import { renderServer, extractAudioServer, ffmpegAvailable } from './render.js';
-import { transcribeServer } from './transcribe.js';
-import { detectCamServer } from './facecam.js';
+import { ffmpegAvailable } from './render.js';
+import { createClipRunner, ClipWorkerCrash } from './clip-runner.js';
 import { getCam, updateCam } from '../cams.js';
-import { needsDetection, resolvePlan, describePlan } from '../../public/js/engine/facecam.js';
 
-/** The streamer-cam plan for a clip: the streamer's saved setting, else a detection on this clip's frames. */
-export async function planCam(userId, login, input, offsetSec, durationSec, note = () => {}) {
-  const stored = getCam(userId, login);
-  let detected = null;
-  if (needsDetection(stored)) {
-    try {
-      detected = await detectCamServer(input, offsetSec, durationSec);
-      if (detected.type !== 'none') updateCam(userId, login, { detected });
-    } catch (e) {
-      note(`Streamer cam detection failed: ${e.message}`);
-    }
-  }
-  const plan = resolvePlan(stored, detected);
-  note(describePlan(plan));
-  return plan;
-}
+// Clip processing (speech-to-text, cam detection, render) runs in a separate worker process; see clip-runner.js.
+export const clipRunner = createClipRunner();
 
 const MAX_PER_USER = Number(process.env.MAX_SERVER_STREAMERS || 10);
 const MAX_TOTAL = Number(process.env.MAX_SERVER_WATCHERS || 50);
@@ -109,30 +93,28 @@ class ServerWatcher {
       const input = path.join(dir, `source.${data.ext}`);
       fs.writeFileSync(input, data.bytes);
       const meta = buildMetadata({ moment, channel: this.channel, login: this.login });
-      let subtitles = [];
-      if (s.subtitles) {
-        state.stage = 'transcribing';
-        try {
-          const audio = await extractAudioServer(input, data.offsetSec, data.durationSec);
-          const sub = await transcribeServer(audio, data.durationSec, s.subtitleLanguage || meta.viral.language);
-          subtitles = sub.phrases;
-          meta.viral.transcript = sub.text;
-          if (sub.text) meta.description = meta.description.replace('\n\nWatch ', `\n"${sub.text.slice(0, 140)}${sub.text.length > 140 ? '...' : ''}"\n\nWatch `);
-        } catch (e) {
-          this.note(`Subtitles skipped: ${e.message}`);
-        }
-      }
-      let cam = null;
-      if (s.layout === 'facecam') {
-        state.stage = 'finding the streamer cam';
-        cam = await planCam(this.userId, this.login, input, data.offsetSec, data.durationSec, (m) => this.note(m));
-      }
-      state.stage = 'rendering';
-      const out = await renderServer({
+      const job = {
         dir, input, offsetSec: data.offsetSec, durationSec: data.durationSec,
-        layout: s.layout, cam, camPosition: s.camPosition, resolution: s.resolution, captions: s.captions,
-        caption: meta.caption, subtitles, thumbAt: moment.viralOffset,
-      });
+        subtitles: Boolean(s.subtitles), language: s.subtitleLanguage || meta.viral.language,
+        layout: s.layout, camStored: s.layout === 'facecam' ? getCam(this.userId, this.login) : null, camPosition: s.camPosition,
+        resolution: s.resolution, captions: s.captions, caption: meta.caption, thumbAt: moment.viralOffset,
+      };
+      const hooks = { stage: (st) => { state.stage = st; }, note: (m) => this.note(m) };
+      let r;
+      try {
+        r = await clipRunner.run(job, hooks);
+      } catch (e) {
+        if (!(e instanceof ClipWorkerCrash) || !job.subtitles) throw e;
+        // Speech-to-text needs the most memory: try once more without it.
+        this.note(`${e.message}. Retrying this clip without subtitles.`);
+        r = await clipRunner.run({ ...job, subtitles: false }, hooks);
+      }
+      const { subtitles, transcript, detected, cam, out } = r;
+      if (detected && detected.type !== 'none') updateCam(this.userId, this.login, { detected });
+      if (transcript) {
+        meta.viral.transcript = transcript;
+        meta.description = meta.description.replace('\n\nWatch ', `\n"${transcript.slice(0, 140)}${transcript.length > 140 ? '...' : ''}"\n\nWatch `);
+      }
       state.stage = 'uploading';
       meta.viral.subtitles = subtitles;
       meta.viral.offsetInClip = +Math.min(data.durationSec, moment.viralOffset).toFixed(1);
@@ -148,7 +130,6 @@ class ServerWatcher {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
-
   trimJobs() {
     const list = [...this.jobs.values()].sort((a, b) => b.startedAt - a.startedAt);
     for (const j of list.slice(10)) this.jobs.delete(j.id);
