@@ -19,6 +19,7 @@ import { router as backup } from './backup.js';
 import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
 import { sanitizeMeta, insertClip, enforceStorageLimit, removeClip, storageUsage, PUBLISHED_TTL_MS, startClipJanitor } from './store.js';
 import { buildInfo } from './version.js';
+import { startRunState, markEnded, runDiagnostics } from './runstate.js';
 import { getCam, updateCam } from './cams.js';
 import { assetsVersion, sendPage, versionedAssets, htmlPages } from './assets.js';
 
@@ -31,7 +32,9 @@ app.set('trust proxy', true);
 app.disable('x-powered-by');
 
 // `assets` is the fingerprint of the app code; open tabs compare it with the code they run to update themselves.
-app.get('/healthz', (_req, res) => res.set('Cache-Control', 'no-store').json({ ok: true, ...buildInfo, assets: assetsVersion() }));
+app.get('/healthz', (req, res) => res.set('Cache-Control', 'no-store').json({
+  ok: true, ...buildInfo, assets: assetsVersion(), ...(req.query.diag !== undefined ? { diag: runDiagnostics() } : {}),
+}));
 
 app.use(express.json({ limit: '1mb' }));
 app.use(loadUser);
@@ -397,6 +400,7 @@ app.use((err, _req, res, _next) => {
 });
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  startRunState();
   const server = app.listen(PORT, () => console.log(`slientclip ${buildInfo.label} listening on :${PORT}`));
   startScheduler();
   startServerWatchers();
@@ -410,6 +414,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const shutdown = async (sig) => {
     if (stopping) return;
     stopping = true;
+    markEnded(`stopped by ${sig}`);
     console.log(`[shutdown] ${sig}: closing browsers…`);
     server.close();
     const timer = setTimeout(() => process.exit(0), 20000);

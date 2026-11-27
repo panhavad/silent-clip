@@ -13,6 +13,7 @@ import { buildMetadata } from '../../public/js/engine/meta.js';
 import { ffmpegAvailable } from './render.js';
 import { createClipRunner, ClipWorkerCrash } from './clip-runner.js';
 import { getCam, updateCam } from '../cams.js';
+import { setActivity, noteWorkerCrash } from '../runstate.js';
 
 // Clip processing (speech-to-text, cam detection, render) runs in a separate worker process; see clip-runner.js.
 export const clipRunner = createClipRunner();
@@ -99,11 +100,13 @@ class ServerWatcher {
         layout: s.layout, camStored: s.layout === 'facecam' ? getCam(this.userId, this.login) : null, camPosition: s.camPosition,
         resolution: s.resolution, captions: s.captions, caption: meta.caption, thumbAt: moment.viralOffset,
       };
-      const hooks = { stage: (st) => { state.stage = st; }, note: (m) => this.note(m) };
+      const hooks = { stage: (st) => { state.stage = st; setActivity(`clip ${this.login}: ${st}`); }, note: (m) => this.note(m) };
+      setActivity(`clip ${this.login}: starting`);
       let r;
       try {
         r = await clipRunner.run(job, hooks);
       } catch (e) {
+        if (e instanceof ClipWorkerCrash) noteWorkerCrash();
         if (!(e instanceof ClipWorkerCrash) || !job.subtitles) throw e;
         // Speech-to-text needs the most memory: try once more without it.
         this.note(`${e.message}. Retrying this clip without subtitles.`);
@@ -127,9 +130,11 @@ class ServerWatcher {
       this.note(`Saved clip "${row.title}"`);
       if (row.overwritten.length) this.note(`Storage limit reached: replaced ${row.overwritten.length} oldest clip(s)`);
     } finally {
+      setActivity('');
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
+
   trimJobs() {
     const list = [...this.jobs.values()].sort((a, b) => b.startedAt - a.startedAt);
     for (const j of list.slice(10)) this.jobs.delete(j.id);
