@@ -35,6 +35,104 @@ function enqueue(fn) {
   return run;
 }
 
+// ---------- clips survive restarts ----------
+// Each clip waits in QUEUE_DIR/<id>/ (the extracted source + job.json) until it is saved, so a server restart or
+// redeploy only delays it: on start the queue is picked up again. A clip that keeps getting cut off is dropped
+// after MAX_ATTEMPTS. The chat baseline of every watcher is saved to STATE_DIR so watching continues warm.
+const QUEUE_DIR = path.join(DATA_DIR, 'clip-queue');
+const STATE_DIR = path.join(DATA_DIR, 'watch-state');
+const MAX_ATTEMPTS = 3;
+const safe = (s) => String(s).replace(/[^\w.-]/g, '_').slice(0, 120);
+const stateFile = (userId, login) => path.join(STATE_DIR, `${userId}-${safe(login)}.json`);
+const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
+
+function queueClip(userId, login, job, data, channel) {
+  const dir = path.join(QUEUE_DIR, safe(`${userId}-${job.id}`));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `source.${data.ext}`), data.bytes);
+  const entry = {
+    id: job.id, userId, login, moment: job.moment, channel,
+    data: { ext: data.ext, offsetSec: data.offsetSec, durationSec: data.durationSec }, attempts: 0, createdAt: Date.now(),
+  };
+  fs.writeFileSync(path.join(dir, 'job.json'), JSON.stringify(entry));
+  return dir;
+}
+
+/** Make one queued clip. Progress and notes go to the watcher of that streamer when it is running. */
+async function processQueued(dir) {
+  const entry = readJson(path.join(dir, 'job.json'));
+  if (!entry) { fs.rmSync(dir, { recursive: true, force: true }); return; }
+  const w = watchers.get(key(entry.userId, entry.login));
+  const note = (m) => w?.note(m);
+  const state = w ? (w.jobs.get(entry.id) || { id: entry.id, moment: entry.moment, startedAt: entry.createdAt }) : { id: entry.id };
+  if (w) { w.jobs.set(entry.id, state); w.trimJobs(); }
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(entry.userId);
+  if (!user) { fs.rmSync(dir, { recursive: true, force: true }); return; }
+  entry.attempts++;
+  if (entry.attempts > MAX_ATTEMPTS) {
+    Object.assign(state, { stage: 'failed', error: 'The server kept restarting while this clip was being made' });
+    note(`Clip dropped: the server restarted ${MAX_ATTEMPTS} times while it was being made`);
+    fs.rmSync(dir, { recursive: true, force: true });
+    return;
+  }
+  fs.writeFileSync(path.join(dir, 'job.json'), JSON.stringify(entry));
+  if (entry.attempts > 1) note('Continuing a clip that was interrupted by a server restart');
+  const s = userSettings(user);
+  const { moment, data, login } = entry;
+  const input = path.join(dir, `source.${data.ext}`);
+  try {
+    const meta = buildMetadata({ moment, channel: entry.channel, login });
+    const job = {
+      dir, input, offsetSec: data.offsetSec, durationSec: data.durationSec,
+      subtitles: Boolean(s.subtitles), language: s.subtitleLanguage || meta.viral.language,
+      layout: s.layout, camStored: s.layout === 'facecam' ? getCam(entry.userId, login) : null, camPosition: s.camPosition,
+      resolution: s.resolution, captions: s.captions, caption: meta.caption, thumbAt: moment.viralOffset,
+    };
+    const hooks = { stage: (st) => { state.stage = st; setActivity(`clip ${login}: ${st}`); }, note };
+    setActivity(`clip ${login}: starting`);
+    let r;
+    try {
+      r = await clipRunner.run(job, hooks);
+    } catch (e) {
+      if (e instanceof ClipWorkerCrash) noteWorkerCrash();
+      if (!(e instanceof ClipWorkerCrash) || !job.subtitles) throw e;
+      // Speech-to-text needs the most memory: try once more without it.
+      note(`${e.message}. Retrying this clip without subtitles.`);
+      r = await clipRunner.run({ ...job, subtitles: false }, hooks);
+    }
+    const { subtitles, transcript, detected, cam, out } = r;
+    if (detected && detected.type !== 'none') updateCam(entry.userId, login, { detected });
+    if (transcript) {
+      meta.viral.transcript = transcript;
+      meta.description = meta.description.replace('\n\nWatch ', `\n"${transcript.slice(0, 140)}${transcript.length > 140 ? '...' : ''}"\n\nWatch `);
+    }
+    state.stage = 'uploading';
+    meta.viral.subtitles = subtitles;
+    meta.viral.offsetInClip = +Math.min(data.durationSec, moment.viralOffset).toFixed(1);
+    meta.viral.source = { offset: data.offsetSec, duration: data.durationSec, ext: data.ext, layout: s.layout, resolution: s.resolution, cam, camPosition: s.camPosition, rendered: out.layout };
+    meta.viral.processedOn = 'server';
+    const { sanitizeMeta, insertClip } = await import('../store.js');
+    // Saved from here on: never make this clip again, even if the server stops right now.
+    fs.rmSync(path.join(dir, 'job.json'), { force: true });
+    const row = insertClip(entry.userId, sanitizeMeta({ ...meta, streamer: login, duration: out.duration, width: out.width, height: out.height, sourceExt: data.ext }),
+      { video: out.video, thumb: out.thumb, source: s.keepSource ? input : null });
+    Object.assign(state, { stage: 'done', progress: 1, clipId: row.id, title: row.title });
+    note(`Saved clip "${row.title}"`);
+    if (row.overwritten.length) note(`Storage limit reached: replaced ${row.overwritten.length} oldest clip(s)`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (e) {
+    Object.assign(state, { stage: 'failed', error: e.message });
+    note(`Clip failed: ${e.message}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  } finally {
+    setActivity('');
+  }
+}
+
+function enqueueDir(dir) {
+  return enqueue(() => processQueued(dir)).catch((e) => console.error('[clip-queue]', e));
+}
+
 class ServerWatcher {
   constructor(userId, streamer, settings, deps = {}) {
     this.userId = userId;
@@ -45,7 +143,9 @@ class ServerWatcher {
     this.stats = null;
     this.log = [];
     this.jobs = new Map();
-    this.watch = new StreamWatch(this.login, settings, { getChannel, getMasterText: fetchMaster, ...deps }, {
+    this.watch = new StreamWatch(this.login, settings, {
+      getChannel, getMasterText: fetchMaster, loadState: () => readJson(stateFile(userId, this.login)), ...deps,
+    }, {
       log: (m) => this.note(m),
       status: (_s, message) => { if (message) this.note(message); },
       channel: (ch) => { this.displayName = ch.displayName; this.avatar = ch.avatar; },
@@ -64,8 +164,12 @@ class ServerWatcher {
         const state = this.jobs.get(job.id) || { id: job.id, moment: job.moment, startedAt: Date.now() };
         this.jobs.set(job.id, state);
         state.stage = 'queued';
-        enqueue(() => this.processClip(state, job.moment, data))
-          .catch((e) => { Object.assign(state, { stage: 'failed', error: e.message }); this.note(`Clip failed: ${e.message}`); });
+        try {
+          enqueueDir(queueClip(this.userId, this.login, job, data, this.channel));
+        } catch (e) {
+          Object.assign(state, { stage: 'failed', error: e.message });
+          this.note(`Clip failed: ${e.message}`);
+        }
       },
     });
   }
@@ -87,52 +191,11 @@ class ServerWatcher {
   }
 
   clipNow() { return this.watch.clipNow(); }
-  async processClip(state, moment, data) {
-    const s = this.settings;
-    const dir = fs.mkdtempSync(path.join(WORK_DIR, `${this.login}-`));
-    try {
-      const input = path.join(dir, `source.${data.ext}`);
-      fs.writeFileSync(input, data.bytes);
-      const meta = buildMetadata({ moment, channel: this.channel, login: this.login });
-      const job = {
-        dir, input, offsetSec: data.offsetSec, durationSec: data.durationSec,
-        subtitles: Boolean(s.subtitles), language: s.subtitleLanguage || meta.viral.language,
-        layout: s.layout, camStored: s.layout === 'facecam' ? getCam(this.userId, this.login) : null, camPosition: s.camPosition,
-        resolution: s.resolution, captions: s.captions, caption: meta.caption, thumbAt: moment.viralOffset,
-      };
-      const hooks = { stage: (st) => { state.stage = st; setActivity(`clip ${this.login}: ${st}`); }, note: (m) => this.note(m) };
-      setActivity(`clip ${this.login}: starting`);
-      let r;
-      try {
-        r = await clipRunner.run(job, hooks);
-      } catch (e) {
-        if (e instanceof ClipWorkerCrash) noteWorkerCrash();
-        if (!(e instanceof ClipWorkerCrash) || !job.subtitles) throw e;
-        // Speech-to-text needs the most memory: try once more without it.
-        this.note(`${e.message}. Retrying this clip without subtitles.`);
-        r = await clipRunner.run({ ...job, subtitles: false }, hooks);
-      }
-      const { subtitles, transcript, detected, cam, out } = r;
-      if (detected && detected.type !== 'none') updateCam(this.userId, this.login, { detected });
-      if (transcript) {
-        meta.viral.transcript = transcript;
-        meta.description = meta.description.replace('\n\nWatch ', `\n"${transcript.slice(0, 140)}${transcript.length > 140 ? '...' : ''}"\n\nWatch `);
-      }
-      state.stage = 'uploading';
-      meta.viral.subtitles = subtitles;
-      meta.viral.offsetInClip = +Math.min(data.durationSec, moment.viralOffset).toFixed(1);
-      meta.viral.source = { offset: data.offsetSec, duration: data.durationSec, ext: data.ext, layout: s.layout, resolution: s.resolution, cam, camPosition: s.camPosition, rendered: out.layout };
-      meta.viral.processedOn = 'server';
-      const { sanitizeMeta, insertClip } = await import('../store.js');
-      const row = insertClip(this.userId, sanitizeMeta({ ...meta, streamer: this.login, duration: out.duration, width: out.width, height: out.height, sourceExt: data.ext }),
-        { video: out.video, thumb: out.thumb, source: s.keepSource ? input : null });
-      Object.assign(state, { stage: 'done', progress: 1, clipId: row.id, title: row.title });
-      this.note(`Saved clip "${row.title}"`);
-      if (row.overwritten.length) this.note(`Storage limit reached: replaced ${row.overwritten.length} oldest clip(s)`);
-    } finally {
-      setActivity('');
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+
+  saveState() {
+    const s = this.watch.exportState();
+    if (!s) return;
+    try { fs.writeFileSync(stateFile(this.userId, this.login), JSON.stringify(s)); } catch { /* best effort */ }
   }
 
   trimJobs() {
@@ -148,6 +211,15 @@ class ServerWatcher {
   }
 }
 
+/** The server is stopping (SIGTERM): queue the moments still being captured and save every chat baseline. */
+export function shutdownServerWatchers() {
+  let flushed = 0;
+  for (const w of watchers.values()) {
+    try { flushed += w.watch.flushPending(); } catch (e) { console.error('[shutdown] flush', w.login, e.message); }
+    w.saveState();
+  }
+  return flushed;
+}
 // ---------- lifecycle ----------
 function wantedStreamers(userId) {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
@@ -180,7 +252,13 @@ export function stopUser(userId) {
 
 export function startServerWatchers() {
   fs.rmSync(WORK_DIR, { recursive: true, force: true });
-  fs.mkdirSync(WORK_DIR, { recursive: true });
+  for (const d of [WORK_DIR, QUEUE_DIR, STATE_DIR]) fs.mkdirSync(d, { recursive: true });
+  // Clips left over from before a restart, oldest first.
+  const left = fs.readdirSync(QUEUE_DIR).map((n) => path.join(QUEUE_DIR, n))
+    .map((d) => ({ d, at: readJson(path.join(d, 'job.json'))?.createdAt ?? 0 })).sort((a, b) => a.at - b.at);
+  for (const { d } of left) enqueueDir(d);
+  if (left.length) console.log(`[clip-queue] resuming ${left.length} clip(s) from before the restart`);
+  setInterval(() => { for (const w of watchers.values()) w.saveState(); }, 20000).unref();
   onSettingsChanged((userId) => syncUser(userId));
   for (const { id } of db.prepare('SELECT id FROM users').all()) syncUser(id);
   // Access can run out while watchers are running: stop those accounts' watchers once their date passes.

@@ -10,6 +10,7 @@ import { TwitchChat } from './chat.js';
 import { HypeAnalyzer } from './analyzer.js';
 
 export const OFFLINE_GRACE_MS = 10 * 60000;
+const RESTORE_MAX_AGE_MS = 5 * 60000;
 const VIDEO_STALE_MS = 30000;
 const RETRY_MS = [3000, 8000, 15000, 30000, 60000];
 
@@ -107,6 +108,11 @@ export class StreamWatch {
   #startChat() {
     if (this.chat) return;
     const analyzer = new HypeAnalyzer(this.settings);
+    // A server restart (redeploy) shouldn't throw away the baseline learned so far.
+    const saved = this.deps.loadState?.(this.login);
+    if (saved?.analyzer && this.#now() - (saved.savedAt || 0) < RESTORE_MAX_AGE_MS && analyzer.importState(saved.analyzer)) {
+      this.#log('Chat baseline restored after a server restart');
+    }
     this.analyzer = analyzer;
     this.chat = new this.deps.Chat(this.login, {
       onMessage: (m) => this.analyzer === analyzer && analyzer.addMessage(m),
@@ -202,6 +208,28 @@ export class StreamWatch {
     if (!this.analyzer || !this.buffer) return false;
     this.queueMoment(this.analyzer.manualMoment(this.#now()));
     return true;
+  }
+
+  /** The learned baseline, for loadState() after a restart; null when chat isn't running. */
+  exportState() {
+    return this.analyzer ? { savedAt: this.#now(), analyzer: this.analyzer.exportState() } : null;
+  }
+
+  /**
+   * The server is stopping: hand over every moment still being captured with the video buffered so far (a shorter
+   * after-part rather than no clip at all). Returns how many were handed over.
+   */
+  flushPending() {
+    const b = this.buffer;
+    let n = 0;
+    for (const job of this.pending.splice(0)) {
+      const data = b?.extract(job.start, Math.min(job.end, b.liveEdge || job.end));
+      if (!data) continue;
+      job.moment = { ...job.moment, viralOffset: Math.max(0, (job.moment.eventPdt - data.startPdt) / 1000) };
+      this.hooks.clip?.(job, data);
+      n++;
+    }
+    return n;
   }
 
   tick() {

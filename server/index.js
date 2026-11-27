@@ -16,7 +16,7 @@ import { closeAllSessions } from './social/browser.js';
 import { router as extensionRouter, startExtensionSweeper } from './extension.js';
 import { router as admin } from './admin.js';
 import { router as backup } from './backup.js';
-import { router as serverWatchRouter, startServerWatchers, syncUser } from './watch/manager.js';
+import { router as serverWatchRouter, startServerWatchers, syncUser, shutdownServerWatchers } from './watch/manager.js';
 import { sanitizeMeta, insertClip, enforceStorageLimit, removeClip, storageUsage, PUBLISHED_TTL_MS, startClipJanitor } from './store.js';
 import { buildInfo } from './version.js';
 import { startRunState, markEnded, runDiagnostics } from './runstate.js';
@@ -415,7 +415,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (stopping) return;
     stopping = true;
     markEnded(`stopped by ${sig}`);
-    console.log(`[shutdown] ${sig}: closing browsers…`);
+    const flushed = shutdownServerWatchers();
+    console.log(`[shutdown] ${sig}: saved watch state${flushed ? `, queued ${flushed} clip(s) being captured` : ''}; closing browsers…`);
     server.close();
     const timer = setTimeout(() => process.exit(0), 20000);
     timer.unref();

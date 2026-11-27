@@ -271,3 +271,44 @@ test('clip work runs in a worker process: a worker killed mid-job fails only tha
     if (prevFf === undefined) delete process.env.FFMPEG_PATH; else process.env.FFMPEG_PATH = prevFf;
   }
 });
+
+test('a restart keeps the chat baseline (saved state restored) and hands over moments still being captured', async () => {
+  const { StreamWatch } = await import('../public/js/engine/pipeline.js');
+  const { HypeAnalyzer } = await import('../public/js/engine/analyzer.js');
+  let t = 1_800_000_000_000;
+  const a = new HypeAnalyzer({});
+  a.startedAt = t - 120000;
+  for (let s = 0; s < 120; s++) for (let k = 0; k < 3; k++) a.addMessage({ user: `u${k}`, text: 'hello there', emotes: [], ts: t - 120000 + s * 1000 });
+  const saved = JSON.parse(JSON.stringify({ savedAt: t - 5000, analyzer: a.exportState() }));
+  const base = a.tick(t).stats.baseline;
+
+  class FakeBuffer {
+    constructor() { this.latencyMs = 4000; this.bufferedSec = 40; this.lastDataAt = t; }
+    async start() {}
+    stop() {}
+    get liveEdge() { return t - 2000; }
+    extract(start, end) { return { bytes: new Uint8Array(4), ext: 'ts', offsetSec: 0, durationSec: (end - start) / 1000, startPdt: start }; }
+  }
+  class FakeChat { constructor(l, h) { this.h = h; } connect() { this.h.onState('connected'); } close() {} }
+  const clips = [], logs = [];
+  let stats;
+  const w = new StreamWatch('xqc', { preRollSec: 20, postRollSec: 10, reactionDelaySec: 3 },
+    { getChannel: async () => ({ live: true }), getMasterText: async () => '', Buffer: FakeBuffer, Chat: FakeChat, now: () => t, loadState: () => saved },
+    { stats: (s) => { stats = s; }, clip: (job, data) => clips.push({ job, data }), log: (m) => logs.push(m) });
+  try {
+    await w.checkLive();
+    w.tick();
+    assert.ok(logs.includes('Chat baseline restored after a server restart'));
+    assert.equal(stats.warm, true, 'warm straight away: no new "learning" period');
+    assert.ok(Math.abs(stats.baseline - base) < 0.2, `same baseline ${stats.baseline} vs ${base}`);
+
+    // Stopping while a moment is being captured: it is handed over with what's buffered so far.
+    w.queueMoment(w.analyzer.manualMoment(t));
+    assert.equal(w.flushPending(), 1);
+    assert.equal(clips.length, 1);
+    assert.ok(clips[0].data.durationSec > 15 && clips[0].data.durationSec < 30, 'the after-part is shorter, the clip still exists');
+    assert.equal(w.exportState().analyzer.buckets.length > 100, true);
+  } finally {
+    w.stop();
+  }
+});

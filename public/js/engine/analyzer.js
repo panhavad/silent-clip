@@ -140,7 +140,26 @@ export class HypeAnalyzer {
     return now - this.lastMomentAt >= this.cooldownMs && this.momentTimes.length < this.maxPerHour;
   }
 
-  // Build a moment for an explicit time (manual "Clip now").
+  /** What the analyzer has learned (the chat baseline), as plain JSON, to survive a server restart. */
+  exportState() {
+    const buckets = [];
+    for (const [sec, b] of this.buckets) {
+      buckets.push([sec, { ...b, users: [...b.users], texts: [...b.texts], tokens: [...b.tokens] }]);
+    }
+    return { startedAt: this.startedAt, lastMomentAt: this.lastMomentAt, momentTimes: this.momentTimes, buckets };
+  }
+
+  /** Continue from exportState() (seconds without chat while the server was down simply count as quiet). */
+  importState(s) {
+    if (!s || !Array.isArray(s.buckets)) return false;
+    this.startedAt = s.startedAt ?? null;
+    this.lastMomentAt = s.lastMomentAt || 0;
+    this.momentTimes = Array.isArray(s.momentTimes) ? s.momentTimes : [];
+    this.buckets = new Map(s.buckets.map(([sec, b]) => [sec, { ...b, users: new Set(b.users), texts: new Map(b.texts), tokens: new Map(b.tokens) }]));
+    return true;
+  }
+
+  // Manual "Clip now" moment for an explicit time.
   manualMoment(now = Date.now()) {
     const cur = Math.floor(now / 1000) - 1;
     return this.#buildMoment({ peakSec: cur, z: 0, ratio: 1, manual: true }, 0);
