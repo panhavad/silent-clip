@@ -67,15 +67,33 @@ const STUDIO = `<!doctype html><body>
     r.setAttribute('aria-checked', 'true');
   }));
   $('#next-button').addEventListener('click', () => { if (++nexts === 3) $('#vis').hidden = false; });
-  $('#done-button').addEventListener('click', async () => {
+  // Like Studio while its checks still run: the 1st Publish only gets a "Got it" notice, the 2nd asks to
+  // "Publish anyway" (or go back), and once published a "still processing" dialog waits for "Got it".
+  let presses = 0, wentBack = 0;
+  const dialog = (tag, html) => { const d = document.createElement(tag); d.style.display = 'block'; d.innerHTML = html; document.body.append(d); return d; };
+  const publish = async () => {
     const report = {
       file: window.__file, title: $('#title-textarea #textbox').innerText, description: $('#description-textarea #textbox').innerText,
       notKids: document.querySelector('[name=VIDEO_MADE_FOR_KIDS_NOT_MFK]').getAttribute('aria-checked'),
       visibility: [...document.querySelectorAll('#vis tp-yt-paper-radio-button')].find((r) => r.getAttribute('aria-checked') === 'true')?.getAttribute('name'),
-      nexts,
+      nexts, presses, wentBack,
     };
     await fetch('/report', { method: 'POST', body: JSON.stringify(report) });
-    const d = document.createElement('ytcp-video-share-dialog'); d.style.display = 'block'; d.textContent = 'Video published'; document.body.append(d);
+    $('ytcp-uploads-dialog').remove();
+    const d = dialog('ytcp-uploads-still-processing-dialog', 'Video still processing <ytcp-button id="close" style="display:inline-block">Got it</ytcp-button>');
+    d.querySelector('#close').addEventListener('click', () => { d.remove(); fetch('/closed', { method: 'POST' }); });
+  };
+  $('#done-button').addEventListener('click', () => {
+    if (++presses === 1) {
+      const d = dialog('tp-yt-paper-dialog', 'Checks are still running <ytcp-button style="display:inline-block">Got it</ytcp-button>');
+      d.querySelector('ytcp-button').addEventListener('click', () => d.remove());
+      return;
+    }
+    const d = dialog('ytcp-prechecks-warning-dialog', \`We are still checking your content
+      <ytcp-button id="secondary-action-button" style="display:inline-block">Go back</ytcp-button>
+      <ytcp-button id="primary-action-button" style="display:inline-block">Publish anyway</ytcp-button>\`);
+    d.querySelector('#secondary-action-button').addEventListener('click', () => { wentBack++; d.remove(); });
+    d.querySelector('#primary-action-button').addEventListener('click', () => { d.remove(); publish(); });
   });
 </script></body>`;
 
@@ -83,6 +101,7 @@ test('the Chrome extension pairs from the popup and posts a clip through YouTube
   const server = app.listen(0);
   const base = `http://127.0.0.1:${server.address().port}`;
   const studio = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/closed') { got.closed = true; return res.end('ok'); }
     if (req.method === 'POST' && req.url === '/report') {
       let b = ''; req.on('data', (c) => { b += c; }); req.on('end', () => { got.report = JSON.parse(b); res.end('ok'); });
       return;
@@ -157,6 +176,8 @@ test('the Chrome extension pairs from the popup and posts a clip through YouTube
     assert.equal(got.report.title, 'Ext E2E clip');
     assert.match(got.report.description, /Huge play[\s\S]*#gaming[\s\S]*#Shorts/);
     assert.deepEqual([got.report.notKids, got.report.visibility, got.report.nexts], ['true', 'PUBLIC', 3]);
+    assert.deepEqual([got.report.presses, got.report.wentBack], [2, 0], 'pressed Publish again after the notice, then Publish anyway');
+    assert.equal(got.closed, true, 'the "still processing" dialog was closed with Got it');
     assert.ok(log.log.some((l) => l.ok === true && /Posted/.test(l.text)), 'the popup shows the post in Recent activity');
 
     // "From my Chrome": the SlientClip page asks the extension (only after the user's OK) for this Chrome's YouTube login.

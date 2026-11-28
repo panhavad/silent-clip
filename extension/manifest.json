@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SlientClip Publisher",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Posts your SlientClip clips to YouTube Shorts from this Chrome, with the YouTube account you're already signed in to.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "alarms", "scripting", "tabs", "activeTab", "cookies"],

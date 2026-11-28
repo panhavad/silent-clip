@@ -1,8 +1,83 @@
 // YouTube Shorts: drives YouTube Studio's upload dialog like a person would.
-import { humanClick, clearAndType, clickIfVisible, waitForAny, pause, LoggedOutError } from './human.js';
+import { humanClick, clearAndType, waitForAny, pause, LoggedOutError } from './human.js';
 import { healSignIn } from './session-check.js';
 
 const VISIBILITY = { public: 'PUBLIC', unlisted: 'UNLISTED', private: 'PRIVATE' };
+const PRESS = '[data-slientclip-press]';
+
+/**
+ * Runs inside Studio: what it shows around Publish, marking the button to press with data-slientclip-press.
+ * States: publishAnyway (checks still running), published, gotIt (a notice to close), error, ready (Publish
+ * can be pressed), busy (Publish disabled), closed (the upload dialog is gone).
+ */
+export function readPublishState({ notices = true } = {}) {
+  const deep = (sel, root = document, out = []) => {
+    out.push(...root.querySelectorAll(sel));
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+    return out;
+  };
+  const shown = (el) => Boolean(el && el.isConnected && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+  const text = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  deep('[data-slientclip-press]').forEach((el) => el.removeAttribute('data-slientclip-press'));
+  const press = (el, state) => { if (el) el.setAttribute('data-slientclip-press', ''); return { state, press: Boolean(el) }; };
+  const buttons = deep('ytcp-button, tp-yt-paper-button, button, [role=button]').filter(shown);
+  const inside = (box) => buttons.filter((b) => box.contains(b));
+
+  const anyway = buttons.find((b) => /publish anyway/i.test(text(b)));
+  if (anyway) return press(anyway, 'publishAnyway');
+  const precheck = deep('ytcp-prechecks-warning-dialog').find(shown);
+  if (precheck) {
+    const b = inside(precheck).find((x) => x.id === 'primary-action-button' || /publish/i.test(text(x)));
+    if (b) return press(b, 'publishAnyway');
+  }
+  const done = deep('ytcp-video-share-dialog, ytcp-uploads-still-processing-dialog').find(shown);
+  if (done) return press(inside(done).find((x) => /^(got it|close|ok|done)$/i.test(text(x))), 'published');
+  const notice = notices && buttons.find((b) => /^(got it|ok|okay|dismiss)$/i.test(text(b)));
+  if (notice) return press(notice, 'gotIt');
+  const err = deep('ytcp-uploads-dialog #error-message').find(shown);
+  if (err && text(err)) return { state: 'error', message: text(err) };
+  const publish = deep('ytcp-uploads-dialog #done-button').find(shown);
+  if (!publish) return { state: 'closed' };
+  if (publish.hasAttribute('disabled') || publish.getAttribute('aria-disabled') === 'true') return { state: 'busy' };
+  return press(publish, 'ready');
+}
+
+/**
+ * Press Publish and answer whatever YouTube asks next — "Publish anyway" while its checks are still running,
+ * "Got it" notices — pressing Publish again if a notice sent it back, until the video is confirmed published.
+ */
+export async function confirmPublish(page, step, { timeout = 10 * 60000, again = 8000 } = {}) {
+  const end = Date.now() + timeout;
+  let pressedAt = 0, closedAt = 0, waitNote = 0, notices = 0;
+  const click = () => humanClick(page.locator(PRESS).first(), { timeout: 5000 }).catch(() => {});
+  while (Date.now() < end) {
+    // A notice that keeps coming back after 5 closes is not in the way: stop answering it.
+    const s = await page.evaluate(readPublishState, { notices: notices < 5 }).catch(() => ({ state: 'busy' }));
+    closedAt = s.state === 'closed' ? closedAt || Date.now() : 0;
+    if (s.state === 'published') { if (s.press) await click(); return; }
+    if (s.state === 'error') throw new Error(`YouTube: ${s.message}`);
+    // Studio closes the upload dialog once the video is saved; give a share dialog a moment to show first.
+    if (s.state === 'closed' && pressedAt && Date.now() - closedAt > 5000) return;
+    if (s.state === 'publishAnyway') {
+      step('YouTube is still checking the video: Publish anyway');
+      await click();
+      pressedAt = Date.now();
+    } else if (s.state === 'gotIt') {
+      step('Closing a YouTube notice');
+      notices++;
+      await click();
+    } else if (s.state === 'ready' && Date.now() - pressedAt > again) {
+      step(pressedAt ? 'Publishing again' : 'Publishing');
+      await click();
+      pressedAt = Date.now();
+    } else if (s.state === 'busy' && Date.now() - waitNote > 30000) {
+      waitNote = Date.now();
+      step('Waiting for YouTube to publish');
+    }
+    await pause(800, 1400);
+  }
+  throw new Error('Timed out waiting for YouTube to confirm the video was published');
+}
 
 export const youtube = {
   id: 'youtube',
@@ -87,6 +162,10 @@ export const youtube = {
 
     for (const label of ['Video elements', 'Checks', 'Visibility']) {
       step(`Next: ${label}`);
+      if ((await page.evaluate(readPublishState).catch(() => ({}))).state === 'gotIt') {
+        await humanClick(page.locator(PRESS).first(), { timeout: 5000 }).catch(() => {});
+        await pause();
+      }
       await humanClick(page.locator('#next-button').first());
       await pause(900, 1800);
     }
@@ -113,15 +192,7 @@ export const youtube = {
 
     step('Publishing');
     final();
-    await humanClick(page.locator('#done-button').first());
-    const { name } = await waitForAny({
-      shared: () => page.locator('ytcp-video-share-dialog, ytcp-uploads-still-processing-dialog').first().isVisible(),
-      warning: () => page.locator('ytcp-prechecks-warning-dialog').first().isVisible(),
-    }, { timeout: 180000, what: 'YouTube to confirm the video was published' });
-    if (name === 'warning') {
-      await clickIfVisible([page.locator('ytcp-prechecks-warning-dialog #primary-action-button'), page.getByRole('button', { name: /publish/i })], 5000);
-      await page.locator('ytcp-video-share-dialog, ytcp-uploads-still-processing-dialog').first().waitFor({ timeout: 120000 }).catch(() => {});
-    }
+    await confirmPublish(page, step);
     const id = href?.match(/(?:youtu\.be\/|shorts\/|v=)([\w-]{6,})/)?.[1] || null;
     return { externalId: id, url: id ? `https://www.youtube.com/shorts/${id}` : 'https://studio.youtube.com/' };
   },

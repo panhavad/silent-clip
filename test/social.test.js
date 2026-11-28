@@ -13,7 +13,7 @@ process.env.SOCIAL_KEEPALIVE_DWELL_SEC = '0';
 const { default: app } = await import('../server/index.js');
 const { runDuePosts } = await import('../server/publisher.js');
 const { DRIVERS, refreshDueSessions } = await import('../server/social/index.js');
-const { browserAvailable, openSession } = await import('../server/social/browser.js');
+const { browserAvailable, browserExecutable, openSession } = await import('../server/social/browser.js');
 const { humanClick, clearAndType, waitForAny, LoggedOutError } = await import('../server/social/human.js');
 
 const skip = browserAvailable() ? false : 'no Chrome, Edge or Chromium installed';
@@ -258,5 +258,48 @@ test('the server browser stays open for a logged-in account, keeps it active, an
     assert.equal(keeperFor(me.id, 'mock'), null);
   } finally {
     delete process.env.SOCIAL_KEEP_OPEN_PLATFORMS;
+  }
+});
+
+// Studio after Publish while its checks still run: a "Got it" notice first, then "Publish anyway", then the
+// "still processing" dialog. `stuck` keeps Publish disabled so nothing ever confirms.
+const STUDIO_PUBLISH = (stuck) => `<!doctype html><body>
+<ytcp-uploads-dialog style="display:block"><ytcp-button id="done-button" style="display:inline-block" ${stuck ? 'aria-disabled="true"' : ''}>Publish</ytcp-button></ytcp-uploads-dialog>
+<script>
+  window.log = [];
+  let presses = 0;
+  const dialog = (tag, html) => { const d = document.createElement(tag); d.style.display = 'block'; d.innerHTML = html; document.body.append(d); return d; };
+  document.querySelector('#done-button').addEventListener('click', () => {
+    log.push('publish');
+    if (++presses === 1) {
+      const d = dialog('tp-yt-paper-dialog', 'Checks are still running <ytcp-button style="display:inline-block">Got it</ytcp-button>');
+      return d.querySelector('ytcp-button').addEventListener('click', () => { log.push('got it'); d.remove(); });
+    }
+    const d = dialog('ytcp-prechecks-warning-dialog', 'Still checking <ytcp-button id="secondary-action-button" style="display:inline-block">Go back</ytcp-button><ytcp-button style="display:inline-block">Publish anyway</ytcp-button>');
+    d.querySelector('#secondary-action-button').addEventListener('click', () => { log.push('go back'); d.remove(); });
+    d.querySelector('ytcp-button:last-child').addEventListener('click', () => {
+      log.push('publish anyway'); d.remove(); document.querySelector('ytcp-uploads-dialog').remove();
+      const p = dialog('ytcp-uploads-still-processing-dialog', 'Video still processing <ytcp-button style="display:inline-block">Got it</ytcp-button>');
+      p.querySelector('ytcp-button').addEventListener('click', () => { log.push('closed'); p.remove(); });
+    });
+  });
+</script></body>`;
+
+test('YouTube: answers "Got it" and "Publish anyway" until the video is published, and never assumes it was', { skip, timeout: 90000 }, async () => {
+  const { chromium } = await import('playwright-core');
+  const { confirmPublish } = await import('../server/social/youtube.js');
+  const browser = await chromium.launch({ executablePath: browserExecutable(), headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(STUDIO_PUBLISH(false));
+    const steps = [];
+    await confirmPublish(page, (s) => steps.push(s), { again: 1500, timeout: 45000 });
+    assert.deepEqual(await page.evaluate(() => window.log), ['publish', 'got it', 'publish', 'publish anyway', 'closed']);
+    assert.ok(steps.includes('YouTube is still checking the video: Publish anyway'), steps.join(' | '));
+
+    await page.setContent(STUDIO_PUBLISH(true));
+    await assert.rejects(confirmPublish(page, () => {}, { timeout: 3000 }), /Timed out waiting for YouTube to confirm/);
+  } finally {
+    await browser.close();
   }
 });

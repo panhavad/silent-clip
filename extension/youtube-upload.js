@@ -54,6 +54,76 @@
     }
   }
 
+  /** Every match of `sel`, including inside open shadow roots. */
+  function findAll(sel, root = document, out = []) {
+    out.push(...root.querySelectorAll(sel));
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) findAll(sel, el.shadowRoot, out);
+    return out;
+  }
+  const textOf = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim();
+
+  /**
+   * What Studio shows around Publish, and the button to press: publishAnyway (checks still running),
+   * published, gotIt (a notice to close), error, ready (Publish can be pressed), busy, closed (dialog gone).
+   */
+  function publishState({ notices = true } = {}) {
+    const buttons = findAll('ytcp-button, tp-yt-paper-button, button, [role=button]').filter(visible);
+    const inside = (box) => buttons.filter((b) => box.contains(b));
+    const anyway = buttons.find((b) => /publish anyway/i.test(textOf(b)));
+    if (anyway) return { state: 'publishAnyway', el: anyway };
+    const precheck = findAll('ytcp-prechecks-warning-dialog').find(visible);
+    if (precheck) {
+      const b = inside(precheck).find((x) => x.id === 'primary-action-button' || /publish/i.test(textOf(x)));
+      if (b) return { state: 'publishAnyway', el: b };
+    }
+    const done = findAll('ytcp-video-share-dialog, ytcp-uploads-still-processing-dialog').find(visible);
+    if (done) return { state: 'published', el: inside(done).find((x) => /^(got it|close|ok|done)$/i.test(textOf(x))) };
+    const notice = notices && buttons.find((b) => /^(got it|ok|okay|dismiss)$/i.test(textOf(b)));
+    if (notice) return { state: 'gotIt', el: notice };
+    const err = findAll('ytcp-uploads-dialog #error-message').find(visible);
+    if (err && textOf(err)) return { state: 'error', message: textOf(err) };
+    const publish = findAll('ytcp-uploads-dialog #done-button').find(visible);
+    if (!publish) return { state: 'closed' };
+    if (publish.hasAttribute('disabled') || publish.getAttribute('aria-disabled') === 'true') return { state: 'busy' };
+    return { state: 'ready', el: publish };
+  }
+
+  /**
+   * Press Publish and answer whatever YouTube asks next — "Publish anyway" while its checks are still running,
+   * "Got it" notices — pressing Publish again if a notice sent it back, until the video is confirmed published.
+   */
+  async function confirmPublish({ timeout = 10 * 60000, again = 8000 } = {}) {
+    const end = Date.now() + timeout;
+    let pressedAt = 0, closedAt = 0, waitNote = 0, notices = 0;
+    while (Date.now() < end) {
+      // A notice that keeps coming back after 5 closes is not in the way: stop answering it.
+      const s = publishState({ notices: notices < 5 });
+      closedAt = s.state === 'closed' ? closedAt || Date.now() : 0;
+      if (s.state === 'published') { if (s.el) await click(s.el); return; }
+      if (s.state === 'error') throw fail(`YouTube: ${s.message}`);
+      // Studio closes the upload dialog once the video is saved; give a share dialog a moment to show first.
+      if (s.state === 'closed' && pressedAt && Date.now() - closedAt > 5000) return;
+      if (s.state === 'publishAnyway') {
+        step('YouTube is still checking the video: Publish anyway', true);
+        await click(s.el);
+        pressedAt = Date.now();
+      } else if (s.state === 'gotIt') {
+        step('Closing a YouTube notice', true);
+        notices++;
+        await click(s.el);
+      } else if (s.state === 'ready' && Date.now() - pressedAt > again) {
+        step(pressedAt ? 'Publishing again' : 'Publishing', true);
+        await click(s.el);
+        pressedAt = Date.now();
+      } else if (s.state === 'busy' && Date.now() - waitNote > 30000) {
+        waitNote = Date.now();
+        step('Waiting for YouTube to publish', true);
+      }
+      await pause(800, 1400);
+    }
+    throw fail('Timed out waiting for YouTube to confirm the video was published');
+  }
+
   let jobId = null;
   const step = (text, final = false) => chrome.runtime.sendMessage({ type: 'step', jobId, step: text, final }).catch(() => {});
 
@@ -140,6 +210,8 @@
 
       for (const label of ['Video elements', 'Checks', 'Visibility']) {
         step(`Next: ${label}`);
+        const notice = publishState();
+        if (notice.state === 'gotIt') { await click(notice.el); await pause(); }
         const next = await waitFor(() => { const b = find('#next-button'); return b && !b.hasAttribute('disabled') && b.getAttribute('aria-disabled') !== 'true' && b; }, { timeout: 30000, what: 'the Next button' });
         await click(next);
         await pause(900, 1800);
@@ -174,17 +246,7 @@
 
       step('Publishing', true);
       pressedPost = true;
-      await click(await waitFor(() => find('#done-button'), { timeout: 20000, what: 'the Publish button' }));
-      const outcome = await waitFor(() => {
-        if (visible(findAny(['ytcp-video-share-dialog', 'ytcp-uploads-still-processing-dialog']))) return 'shared';
-        if (visible(find('ytcp-prechecks-warning-dialog'))) return 'warning';
-        return null;
-      }, { timeout: 180000, what: 'YouTube to confirm the video was published' });
-      if (outcome === 'warning') {
-        const ok = findAny(['ytcp-prechecks-warning-dialog #primary-action-button']);
-        if (ok) await click(ok);
-        await waitFor(() => visible(findAny(['ytcp-video-share-dialog', 'ytcp-uploads-still-processing-dialog'])), { timeout: 120000, what: 'YouTube to publish' }).catch(() => {});
-      }
+      await confirmPublish();
       return { ok: true, url: id ? `https://www.youtube.com/shorts/${id}` : 'https://studio.youtube.com/', externalId: id };
     } catch (e) {
       return { ok: false, error: e.message, final: Boolean(e.final), loggedOut: Boolean(e.loggedOut) || signedOut(), pressedPost };
